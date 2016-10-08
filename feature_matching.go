@@ -1,13 +1,20 @@
 package gans
 
 import (
+	"errors"
 	"math/rand"
 
 	"github.com/unixpickle/autofunc"
 	"github.com/unixpickle/num-analysis/linalg"
+	"github.com/unixpickle/serializer"
 	"github.com/unixpickle/sgd"
 	"github.com/unixpickle/weakai/neuralnet"
 )
+
+func init() {
+	var f FeatureMatching
+	serializer.RegisterTypedDeserializer(f.SerializerType(), DeserializeFeatureMatching)
+}
 
 // FeatureMatching trains a generative adversarial network
 // by making the generator learn to approximate expected
@@ -28,6 +35,31 @@ type FeatureMatching struct {
 	// RandomSize is the size of the generator's random
 	// input vectors.
 	RandomSize int
+}
+
+// DeserializeFeatureMatching deserializes an instance
+// of FeatureMatching.
+func DeserializeFeatureMatching(d []byte) (*FeatureMatching, error) {
+	slice, err := serializer.DeserializeSlice(d)
+	if err != nil {
+		return nil, err
+	}
+	if len(slice) != 4 {
+		return nil, errors.New("invalid FeatureMatching slice")
+	}
+	discrim, ok1 := slice[0].(neuralnet.Network)
+	gen, ok2 := slice[1].(neuralnet.Network)
+	layers, ok3 := slice[2].(serializer.Int)
+	size, ok4 := slice[3].(serializer.Int)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return nil, errors.New("invalid FeatureMatching slice")
+	}
+	return &FeatureMatching{
+		Discriminator: discrim,
+		FeatureLayers: int(layers),
+		Generator:     gen,
+		RandomSize:    int(size),
+	}, nil
 }
 
 // Gradient computes the gradient to train both the
@@ -76,6 +108,23 @@ func (f *FeatureMatching) Gradient(samples sgd.SampleSet) autofunc.Gradient {
 		}
 	}
 	return resGrad
+}
+
+// SerializerType returns the unique ID used to serialize
+// a FeatureMatching instance with the serializer package.
+func (f *FeatureMatching) SerializerType() string {
+	return "github.com/unixpickle/gans.FeatureMatching"
+}
+
+// Serialize serializes the instance as binary data.
+func (f *FeatureMatching) Serialize() ([]byte, error) {
+	s := []serializer.Serializer{
+		f.Discriminator,
+		f.Generator,
+		serializer.Int(f.FeatureLayers),
+		serializer.Int(f.RandomSize),
+	}
+	return serializer.SerializeSlice(s)
 }
 
 func repeat(vec linalg.Vector, n int) linalg.Vector {
