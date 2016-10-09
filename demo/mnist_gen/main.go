@@ -12,14 +12,13 @@ import (
 	"github.com/unixpickle/autofunc"
 	"github.com/unixpickle/gans"
 	"github.com/unixpickle/mnist"
-	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/sgd"
 	"github.com/unixpickle/weakai/neuralnet"
 )
 
 const (
 	StepSize  = 0.001
-	BatchSize = 64
+	BatchSize = 96
 )
 
 func main() {
@@ -35,9 +34,9 @@ func main() {
 	samples := dataSet.SGDSampleSet()
 	var iteration int
 	sgd.SGDMini(fm, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
-		posCost := testPositiveCost(fm, samples)
-		genCost := testGeneratedCost(fm)
-		log.Printf("iteration %d: pos_cost=%f  gen_cost=%f", iteration,
+		posCost := fm.SampleRealCost(samples)
+		genCost := fm.SampleGenCost()
+		log.Printf("iteration %d: real_cost=%f  gen_cost=%f", iteration,
 			posCost, genCost)
 		iteration++
 		return true
@@ -74,23 +73,6 @@ func main() {
 	}
 	defer outFile.Close()
 	png.Encode(outFile, renderings)
-}
-
-func testPositiveCost(fm *gans.FM, samples sgd.SampleSet) float64 {
-	sample := samples.GetSample(rand.Intn(samples.Len()))
-	inVec := sample.(neuralnet.VectorSample).Input
-	output := fm.Discriminator.Apply(&autofunc.Variable{Vector: inVec})
-	return neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, output).Output()[0]
-}
-
-func testGeneratedCost(fm *gans.FM) float64 {
-	genIn := make(linalg.Vector, fm.RandomSize)
-	for i := range genIn {
-		genIn[i] = rand.NormFloat64()
-	}
-	genOut := fm.Generator.Apply(&autofunc.Variable{Vector: genIn})
-	output := fm.Discriminator.Apply(genOut)
-	return neuralnet.SigmoidCECost{}.Cost(linalg.Vector{0}, output).Output()[0]
 }
 
 func createModel() *gans.FM {

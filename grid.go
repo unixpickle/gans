@@ -24,6 +24,7 @@ func GridSample(rows, cols int, gen func() *neuralnet.Tensor3) image.Image {
 	for i := range tensors {
 		tensors[i] = gen()
 	}
+
 	newWidth := tensors[0].Width*cols + (cols+1)*GridSpacing
 	newHeight := tensors[0].Height*rows + (rows+1)*GridSpacing
 	img := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
@@ -32,6 +33,7 @@ func GridSample(rows, cols int, gen func() *neuralnet.Tensor3) image.Image {
 			img.Set(x, y, GridSpaceColor)
 		}
 	}
+
 	var idx int
 	for y := 0; y < rows; y++ {
 		tileY := GridSpacing + y*(tensors[0].Height+GridSpacing)

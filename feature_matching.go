@@ -110,6 +110,27 @@ func (f *FM) Gradient(samples sgd.SampleSet) autofunc.Gradient {
 	return resGrad
 }
 
+// SampleRealCost measures the cross-entropy cost of the
+// discriminator on a randomly chosen sample.
+func (f *FM) SampleRealCost(samples sgd.SampleSet) float64 {
+	sample := samples.GetSample(rand.Intn(samples.Len()))
+	inVec := sample.(neuralnet.VectorSample).Input
+	output := f.Discriminator.Apply(&autofunc.Variable{Vector: inVec})
+	return neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, output).Output()[0]
+}
+
+// SampleGenCost measures the cross-entropy cost of the
+// discriminator on a generated input.
+func (f *FM) SampleGenCost() float64 {
+	genIn := make(linalg.Vector, f.RandomSize)
+	for i := range genIn {
+		genIn[i] = rand.NormFloat64()
+	}
+	genOut := f.Generator.Apply(&autofunc.Variable{Vector: genIn})
+	output := f.Discriminator.Apply(genOut)
+	return neuralnet.SigmoidCECost{}.Cost(linalg.Vector{0}, output).Output()[0]
+}
+
 // SerializerType returns the unique ID used to serialize
 // a FM instance with the serializer package.
 func (f *FM) SerializerType() string {
