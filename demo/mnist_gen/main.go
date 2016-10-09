@@ -56,13 +56,17 @@ func main() {
 
 	log.Println("Creating generation grid...")
 
-	renderings := mnist.ReconstructionGrid(func(ignore []float64) []float64 {
+	renderings := gans.GridSample(5, 8, func() *neuralnet.Tensor3 {
 		randVec := make([]float64, fm.RandomSize)
 		for i := range randVec {
 			randVec[i] = rand.NormFloat64()
 		}
-		return fm.Generator.Apply(&autofunc.Variable{Vector: randVec}).Output()
-	}, dataSet, 5, 8)
+		out := fm.Generator.Apply(&autofunc.Variable{Vector: randVec}).Output()
+		for i, x := range out {
+			out[i] = 1 - x
+		}
+		return &neuralnet.Tensor3{Width: 28, Height: 28, Depth: 1, Data: out}
+	})
 	outFile, err := os.Create(os.Args[2])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -115,10 +119,12 @@ func createModel() *gans.FM {
 func createGenerator() neuralnet.Network {
 	var res neuralnet.Network
 
-	res = append(res, &neuralnet.DenseLayer{
-		InputCount:  14 * 14,
-		OutputCount: 14 * 14,
-	}, neuralnet.HyperbolicTangent{})
+	for i := 0; i < 2; i++ {
+		res = append(res, &neuralnet.DenseLayer{
+			InputCount:  14 * 14,
+			OutputCount: 14 * 14,
+		}, neuralnet.HyperbolicTangent{})
+	}
 
 	lastDepth := 1
 	for i, outDepth := range []int{6, 15, 20, 20, 4} {
