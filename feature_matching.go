@@ -12,14 +12,14 @@ import (
 )
 
 func init() {
-	var f FeatureMatching
-	serializer.RegisterTypedDeserializer(f.SerializerType(), DeserializeFeatureMatching)
+	var f FM
+	serializer.RegisterTypedDeserializer(f.SerializerType(), DeserializeFM)
 }
 
-// FeatureMatching trains a generative adversarial network
-// by making the generator learn to approximate expected
-// feature vectors in a layer of the discriminator.
-type FeatureMatching struct {
+// FM trains a generative adversarial network using the
+// feature matching approach, making the generator aim
+// to approximate a hidden layer in the discriminator.
+type FM struct {
 	// Discriminator is the full discriminator network
 	// minus the output sigmoid layer.
 	Discriminator neuralnet.Network
@@ -37,24 +37,24 @@ type FeatureMatching struct {
 	RandomSize int
 }
 
-// DeserializeFeatureMatching deserializes an instance
-// of FeatureMatching.
-func DeserializeFeatureMatching(d []byte) (*FeatureMatching, error) {
+// DeserializeFM deserializes an instance
+// of FM.
+func DeserializeFM(d []byte) (*FM, error) {
 	slice, err := serializer.DeserializeSlice(d)
 	if err != nil {
 		return nil, err
 	}
 	if len(slice) != 4 {
-		return nil, errors.New("invalid FeatureMatching slice")
+		return nil, errors.New("invalid FM slice")
 	}
 	discrim, ok1 := slice[0].(neuralnet.Network)
 	gen, ok2 := slice[1].(neuralnet.Network)
 	layers, ok3 := slice[2].(serializer.Int)
 	size, ok4 := slice[3].(serializer.Int)
 	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return nil, errors.New("invalid FeatureMatching slice")
+		return nil, errors.New("invalid FM slice")
 	}
-	return &FeatureMatching{
+	return &FM{
 		Discriminator: discrim,
 		FeatureLayers: int(layers),
 		Generator:     gen,
@@ -66,7 +66,7 @@ func DeserializeFeatureMatching(d []byte) (*FeatureMatching, error) {
 // generator and the discriminator on the mini-batch of
 // actual samples.
 // The samples' output vectors are ignored.
-func (f *FeatureMatching) Gradient(samples sgd.SampleSet) autofunc.Gradient {
+func (f *FM) Gradient(samples sgd.SampleSet) autofunc.Gradient {
 	n := samples.Len()
 
 	var realBatch linalg.Vector
@@ -111,13 +111,13 @@ func (f *FeatureMatching) Gradient(samples sgd.SampleSet) autofunc.Gradient {
 }
 
 // SerializerType returns the unique ID used to serialize
-// a FeatureMatching instance with the serializer package.
-func (f *FeatureMatching) SerializerType() string {
+// a FM instance with the serializer package.
+func (f *FM) SerializerType() string {
 	return "github.com/unixpickle/gans.FeatureMatching"
 }
 
 // Serialize serializes the instance as binary data.
-func (f *FeatureMatching) Serialize() ([]byte, error) {
+func (f *FM) Serialize() ([]byte, error) {
 	s := []serializer.Serializer{
 		f.Discriminator,
 		f.Generator,
