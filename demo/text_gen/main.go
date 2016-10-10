@@ -94,15 +94,18 @@ func readOrCreateModel(path string) *gans.Recurrent {
 		},
 	}
 	genOutputBlock.Randomize()
+
 	rec := &gans.Recurrent{
 		Discriminator: &rnn.BlockSeqFunc{
 			Block: rnn.StackedBlock{
-				rnn.NewLSTM(CharCount, 100),
+				rnn.NewLSTM(CharCount, 200),
+				rnn.NewLSTM(200, 100),
 				rnn.NewNetworkBlock(discOutputBlock, 0),
 			},
 		},
 		Generator: rnn.StackedBlock{
-			rnn.NewLSTM(RandCount, 100),
+			rnn.NewLSTM(RandCount, 200),
+			rnn.NewLSTM(200, 100),
 			rnn.NewNetworkBlock(genOutputBlock, 0),
 		},
 		GenActivation: &neuralnet.SoftmaxLayer{},
@@ -115,6 +118,9 @@ func readOrCreateModel(path string) *gans.Recurrent {
 func generateSentence(model *gans.Recurrent) string {
 	var res string
 	runner := &rnn.Runner{Block: model.Generator}
+	softmax := &autofunc.Softmax{}
+
+	var lenWeights linalg.Vector
 	for i := 0; i < MaxLen; i++ {
 		input := make(linalg.Vector, model.RandomSize)
 		for j := range input {
@@ -122,26 +128,24 @@ func generateSentence(model *gans.Recurrent) string {
 		}
 
 		outVec := runner.StepTime(input)
-		endProbVar := &autofunc.Variable{Vector: outVec[CharCount:]}
-		endProb := autofunc.Sigmoid{}.Apply(endProbVar).Output()[0]
+		lenWeights = append(lenWeights, outVec[len(outVec)-1])
 
 		out := &autofunc.Variable{Vector: outVec[:CharCount]}
-		softmax := &autofunc.Softmax{}
 		softmaxed := softmax.Apply(out).Output()
-		var idx int
-		num := rand.Float64()
-		for i, x := range softmaxed {
-			if x > num {
-				idx = i
-				break
-			}
-			num -= x
-		}
-		res += string(byte(idx))
-
-		if rand.Float64() < endProb {
-			break
-		}
+		res += string(byte(randomSample(softmaxed)))
 	}
-	return res
+
+	lenProbs := softmax.Apply(&autofunc.Variable{Vector: lenWeights}).Output()
+	return res[:randomSample(lenProbs)]
+}
+
+func randomSample(probs linalg.Vector) int {
+	num := rand.Float64()
+	for i, x := range probs {
+		if x > num {
+			return i
+		}
+		num -= x
+	}
+	return len(probs) - 1
 }

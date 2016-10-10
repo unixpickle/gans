@@ -29,8 +29,8 @@ type Recurrent struct {
 
 	// Generator learns to turn random input sequences into
 	// sequences that trick the discriminator.
-	// The last output of the block is squashed and used
-	// as a termination probability.
+	// The last output of the block is used as a scaled
+	// termination probability.
 	Generator rnn.Block
 
 	// RandomSize is the input size of the generator.
@@ -136,9 +136,8 @@ func (r *Recurrent) SampleGenCost() float64 {
 	genOut := genFunc.BatchSeqs([][]autofunc.Result{randomSeq})
 
 	discInput := make([]autofunc.Result, r.MaxLen)
-	discMask := make([]float64, r.MaxLen)
 
-	probNotDone := 1.0
+	var rawMasks linalg.Vector
 	for i, x := range genOut.OutputSeqs()[0] {
 		outVec := &autofunc.Variable{Vector: x}
 		prefix := autofunc.Slice(outVec, 0, len(x)-1)
@@ -146,15 +145,10 @@ func (r *Recurrent) SampleGenCost() float64 {
 			prefix = r.GenActivation.Apply(prefix)
 		}
 		discInput[i] = prefix
-		endProb := autofunc.Sigmoid{}.Apply(
-			autofunc.Slice(outVec, len(x)-1, len(x)),
-		).Output()[0]
-		if i == r.MaxLen-1 {
-			endProb = 1
-		}
-		discMask[i] = endProb * probNotDone
-		probNotDone *= 1 - endProb
+		rawMasks = append(rawMasks, x[len(x)-1])
 	}
+	softmax := autofunc.Softmax{}
+	discMask := softmax.Apply(&autofunc.Variable{Vector: rawMasks}).Output()
 
 	discOut := r.Discriminator.BatchSeqs([][]autofunc.Result{discInput})
 	var totalCost float64
@@ -248,13 +242,10 @@ func (r *Recurrent) genGradients(genGrad, discGrad autofunc.Gradient, count int)
 	for i, outSeq := range genOut.OutputSeqs() {
 		poolSeq := make([]*autofunc.Variable, len(outSeq))
 		discInputSeq := make([]autofunc.Result, len(outSeq))
-		discMaskSeq := make([]autofunc.Result, len(outSeq))
 		poolVariables[i] = poolSeq
 		discInput[i] = discInputSeq
-		discMask[i] = discMaskSeq
 
-		var notDoneProb autofunc.Result
-		notDoneProb = &autofunc.Variable{Vector: linalg.Vector{1}}
+		var rawEndWeights []autofunc.Result
 		for j, x := range outSeq {
 			poolSeq[j] = &autofunc.Variable{Vector: x}
 			prefix := autofunc.Slice(poolSeq[j], 0, len(x)-1)
@@ -262,15 +253,14 @@ func (r *Recurrent) genGradients(genGrad, discGrad autofunc.Gradient, count int)
 				prefix = r.GenActivation.Apply(prefix)
 			}
 			discInputSeq[j] = prefix
-			endProb := autofunc.Sigmoid{}.Apply(
-				autofunc.Slice(poolSeq[j], len(x)-1, len(x)),
-			)
-			if j == len(outSeq)-1 {
-				endProb = &autofunc.Variable{Vector: linalg.Vector{1}}
-			}
-			complement := autofunc.AddScaler(autofunc.Scale(endProb, -1), 1)
-			discMaskSeq[j] = autofunc.Mul(endProb, notDoneProb)
-			notDoneProb = autofunc.Mul(complement, notDoneProb)
+			lastVal := autofunc.Slice(poolSeq[j], len(x)-1, len(x))
+			rawEndWeights = append(rawEndWeights, lastVal)
+		}
+		softmax := autofunc.Softmax{}
+		endProbs := softmax.Apply(autofunc.Concat(rawEndWeights...))
+		discMask[i] = make([]autofunc.Result, len(endProbs.Output()))
+		for j := range discMask[i] {
+			discMask[i][j] = autofunc.Slice(endProbs, j, j+1)
 		}
 	}
 
