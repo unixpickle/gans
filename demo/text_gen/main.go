@@ -36,8 +36,9 @@ func main() {
 	samples := ReadSampleSet(os.Args[1])
 	model := readOrCreateModel(os.Args[2])
 
-	g := &sgd.Adam{
+	g := &sgd.RMSProp{
 		Gradienter: model,
+		Resiliency: 0.9,
 	}
 
 	log.Println("Training model...")
@@ -108,9 +109,10 @@ func readOrCreateModel(path string) *gans.Recurrent {
 			rnn.NewLSTM(200, 100),
 			rnn.NewNetworkBlock(genOutputBlock, 0),
 		},
-		GenActivation: &neuralnet.SoftmaxLayer{},
 		RandomSize:    RandCount,
 		MaxLen:        MaxLen,
+		ProbSquasher:  QuadSquash{},
+		GenActivation: QuadSquash{},
 	}
 	return rec
 }
@@ -118,7 +120,6 @@ func readOrCreateModel(path string) *gans.Recurrent {
 func generateSentence(model *gans.Recurrent) string {
 	var res string
 	runner := &rnn.Runner{Block: model.Generator}
-	softmax := &autofunc.Softmax{}
 
 	var lenWeights linalg.Vector
 	for i := 0; i < MaxLen; i++ {
@@ -131,11 +132,12 @@ func generateSentence(model *gans.Recurrent) string {
 		lenWeights = append(lenWeights, outVec[len(outVec)-1])
 
 		out := &autofunc.Variable{Vector: outVec[:CharCount]}
-		softmaxed := softmax.Apply(out).Output()
-		res += string(byte(randomSample(softmaxed)))
+		squashed := model.GenActivation.Apply(out).Output()
+		res += string(byte(randomSample(squashed)))
 	}
 
-	lenProbs := softmax.Apply(&autofunc.Variable{Vector: lenWeights}).Output()
+	weightVar := &autofunc.Variable{Vector: lenWeights}
+	lenProbs := model.ProbSquasher.Apply(weightVar).Output()
 	return res[:randomSample(lenProbs)+1]
 }
 

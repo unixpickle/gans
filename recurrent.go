@@ -30,20 +30,26 @@ type Recurrent struct {
 	// Generator learns to turn random input sequences into
 	// sequences that trick the discriminator.
 	// The last output of the block is used as a scaled
-	// termination probability.
+	// termination/length probability.
 	Generator rnn.Block
+
+	// ProbSquasher is used to turn a vector of values into
+	// a vector of probabilities, kind of like a softmax.
+	// It is used to translate the generator's last output
+	// into a length probability.
+	ProbSquasher autofunc.Func
 
 	// RandomSize is the input size of the generator.
 	RandomSize int
+
+	// MaxLen is the maximum generated sequence length.
+	MaxLen int
 
 	// GenActivation is the activation function through
 	// which generator outputs are fed before being given
 	// to the discriminator.
 	// It may be nil for the identity map.
 	GenActivation autofunc.Func
-
-	// MaxLen is the maximum generated sequence length.
-	MaxLen int
 }
 
 // DeserializeRecurrent deserializes a Recurrent instance.
@@ -52,14 +58,15 @@ func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(slice) != 4 && len(slice) != 5 {
+	if len(slice) != 5 && len(slice) != 6 {
 		return nil, errors.New("invalid Recurrent slice")
 	}
 	discrim, ok1 := slice[0].(rnn.SeqFunc)
 	gen, ok2 := slice[1].(rnn.Block)
 	size, ok3 := slice[2].(serializer.Int)
 	maxLen, ok4 := slice[3].(serializer.Int)
-	if !ok1 || !ok2 || !ok3 || !ok4 {
+	probSquasher, ok5 := slice[4].(autofunc.Func)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
 		return nil, errors.New("invalid Recurrent slice")
 	}
 	res := &Recurrent{
@@ -67,9 +74,10 @@ func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 		Generator:     gen,
 		RandomSize:    int(size),
 		MaxLen:        int(maxLen),
+		ProbSquasher:  probSquasher,
 	}
-	if len(slice) == 5 {
-		res.GenActivation, ok1 = slice[4].(autofunc.Func)
+	if len(slice) == 6 {
+		res.GenActivation, ok1 = slice[5].(autofunc.Func)
 		if !ok1 {
 			return nil, errors.New("invalid Recurrent slice")
 		}
@@ -147,8 +155,7 @@ func (r *Recurrent) SampleGenCost() float64 {
 		discInput[i] = prefix
 		rawMasks = append(rawMasks, x[len(x)-1])
 	}
-	softmax := autofunc.Softmax{}
-	discMask := softmax.Apply(&autofunc.Variable{Vector: rawMasks}).Output()
+	discMask := r.ProbSquasher.Apply(&autofunc.Variable{Vector: rawMasks}).Output()
 
 	discOut := r.Discriminator.BatchSeqs([][]autofunc.Result{discInput})
 	var totalCost float64
@@ -176,11 +183,16 @@ func (r *Recurrent) Serialize() ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("type %T is not a Serializer", r.Generator)
 	}
+	squashSerializer, ok := r.ProbSquasher.(serializer.Serializer)
+	if !ok {
+		return nil, fmt.Errorf("type %T is not a Serializer", r.ProbSquasher)
+	}
 	serializers := []serializer.Serializer{
 		discSerializer,
 		genSerializer,
 		serializer.Int(r.RandomSize),
 		serializer.Int(r.MaxLen),
+		squashSerializer,
 	}
 	if r.GenActivation != nil {
 		actSerializer, ok := r.GenActivation.(serializer.Serializer)
@@ -256,8 +268,7 @@ func (r *Recurrent) genGradients(genGrad, discGrad autofunc.Gradient, count int)
 			lastVal := autofunc.Slice(poolSeq[j], len(x)-1, len(x))
 			rawEndWeights = append(rawEndWeights, lastVal)
 		}
-		softmax := autofunc.Softmax{}
-		endProbs := softmax.Apply(autofunc.Concat(rawEndWeights...))
+		endProbs := r.ProbSquasher.Apply(autofunc.Concat(rawEndWeights...))
 		discMask[i] = make([]autofunc.Result, len(endProbs.Output()))
 		for j := range discMask[i] {
 			discMask[i][j] = autofunc.Slice(endProbs, j, j+1)
