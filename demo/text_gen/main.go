@@ -136,7 +136,7 @@ func generateSentence(model *gans.Recurrent) string {
 	}
 
 	lenProbs := softmax.Apply(&autofunc.Variable{Vector: lenWeights}).Output()
-	return res[:randomSample(lenProbs)]
+	return res[:randomSample(lenProbs)+1]
 }
 
 func randomSample(probs linalg.Vector) int {
