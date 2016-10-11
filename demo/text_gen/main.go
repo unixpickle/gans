@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/unixpickle/autofunc"
 	"github.com/unixpickle/gans"
 	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/sgd"
@@ -45,7 +44,7 @@ func main() {
 	var iteration int
 	sgd.SGDMini(g, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
 		log.Printf("iteration %d: real=%f gen=%f", iteration,
-			model.SampleRealCost(s), model.SampleGenCost())
+			model.SampleRealCost(s), model.SampleGenCost(s))
 		iteration++
 		return true
 	})
@@ -91,35 +90,37 @@ func readOrCreateModel(path string) *gans.Recurrent {
 	genOutputBlock := neuralnet.Network{
 		&neuralnet.DenseLayer{
 			InputCount:  100,
-			OutputCount: CharCount + 1,
+			OutputCount: CharCount,
 		},
+		QuadSquash{},
 	}
 	genOutputBlock.Randomize()
 
 	rec := &gans.Recurrent{
-		Discriminator: &rnn.BlockSeqFunc{
+		DiscrimFeatures: &rnn.BlockSeqFunc{
 			Block: rnn.StackedBlock{
 				rnn.NewLSTM(CharCount, 200),
 				rnn.NewLSTM(200, 100),
-				rnn.NewNetworkBlock(discOutputBlock, 0),
 			},
 		},
-		Generator: rnn.StackedBlock{
-			rnn.NewLSTM(RandCount, 200),
-			rnn.NewLSTM(200, 100),
-			rnn.NewNetworkBlock(genOutputBlock, 0),
+		DiscrimClassify: &rnn.BlockSeqFunc{
+			Block: rnn.NewNetworkBlock(discOutputBlock, 0),
 		},
-		RandomSize:    RandCount,
-		MaxLen:        MaxLen,
-		ProbSquasher:  QuadSquash{},
-		GenActivation: QuadSquash{},
+		Generator: &rnn.BlockSeqFunc{
+			Block: rnn.StackedBlock{
+				rnn.NewLSTM(RandCount, 200),
+				rnn.NewLSTM(200, 100),
+				rnn.NewNetworkBlock(genOutputBlock, 0),
+			},
+		},
+		RandomSize: RandCount,
 	}
 	return rec
 }
 
 func generateSentence(model *gans.Recurrent) string {
 	var res string
-	runner := &rnn.Runner{Block: model.Generator}
+	runner := &rnn.Runner{Block: model.Generator.(*rnn.BlockSeqFunc).Block}
 
 	var lenWeights linalg.Vector
 	for i := 0; i < MaxLen; i++ {
@@ -131,14 +132,10 @@ func generateSentence(model *gans.Recurrent) string {
 		outVec := runner.StepTime(input)
 		lenWeights = append(lenWeights, outVec[len(outVec)-1])
 
-		out := &autofunc.Variable{Vector: outVec[:CharCount]}
-		squashed := model.GenActivation.Apply(out).Output()
-		res += string(byte(randomSample(squashed)))
+		res += string(byte(randomSample(outVec[:CharCount])))
 	}
 
-	weightVar := &autofunc.Variable{Vector: lenWeights}
-	lenProbs := model.ProbSquasher.Apply(weightVar).Output()
-	return res[:randomSample(lenProbs)+1]
+	return res
 }
 
 func randomSample(probs linalg.Vector) int {

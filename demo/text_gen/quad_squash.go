@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/unixpickle/autofunc"
 	"github.com/unixpickle/serializer"
+	"github.com/unixpickle/weakai/neuralnet"
 )
 
 func init() {
@@ -10,7 +11,7 @@ func init() {
 	serializer.RegisterTypedDeserializer(q.SerializerType(), DeserializeQuadSquash)
 }
 
-// QuadSquash squares its arguments and then normalizes
+// QuadSquash cubes its arguments and then normalizes
 // them to be probabilities.
 type QuadSquash struct{}
 
@@ -19,9 +20,14 @@ func DeserializeQuadSquash(d []byte) (QuadSquash, error) {
 }
 
 func (_ QuadSquash) Apply(in autofunc.Result) autofunc.Result {
-	square := autofunc.Square(in)
-	sum := autofunc.SumAll(square)
-	return autofunc.ScaleFirst(square, autofunc.Inverse(sum))
+	tanh := neuralnet.HyperbolicTangent{}
+	tan := tanh.Apply(in)
+	softmax := autofunc.Softmax{}
+	return softmax.Apply(autofunc.Scale(tan, 4))
+}
+
+func (_ QuadSquash) ApplyR(rv autofunc.RVector, in autofunc.RResult) autofunc.RResult {
+	panic("not yet implemented")
 }
 
 func (_ QuadSquash) SerializerType() string {

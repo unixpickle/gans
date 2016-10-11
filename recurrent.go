@@ -21,35 +21,11 @@ func init() {
 
 // Recurrent trains a GAN comprised of two RNNs.
 type Recurrent struct {
-	// Discriminator learns to tell if the incoming sequence
-	// is a training sample or a generated sample.
-	// The inputs will have length x-1 where x is the
-	// output size of the generator.
-	Discriminator rnn.SeqFunc
+	DiscrimFeatures rnn.SeqFunc
+	DiscrimClassify rnn.SeqFunc
 
-	// Generator learns to turn random input sequences into
-	// sequences that trick the discriminator.
-	// The last output of the block is used as a scaled
-	// termination/length probability.
-	Generator rnn.Block
-
-	// ProbSquasher is used to turn a vector of values into
-	// a vector of probabilities, kind of like a softmax.
-	// It is used to translate the generator's last output
-	// into a length probability.
-	ProbSquasher autofunc.Func
-
-	// RandomSize is the input size of the generator.
+	Generator  rnn.SeqFunc
 	RandomSize int
-
-	// MaxLen is the maximum generated sequence length.
-	MaxLen int
-
-	// GenActivation is the activation function through
-	// which generator outputs are fed before being given
-	// to the discriminator.
-	// It may be nil for the identity map.
-	GenActivation autofunc.Func
 }
 
 // DeserializeRecurrent deserializes a Recurrent instance.
@@ -58,57 +34,54 @@ func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(slice) != 5 && len(slice) != 6 {
+	if len(slice) != 4 {
 		return nil, errors.New("invalid Recurrent slice")
 	}
-	discrim, ok1 := slice[0].(rnn.SeqFunc)
-	gen, ok2 := slice[1].(rnn.Block)
-	size, ok3 := slice[2].(serializer.Int)
-	maxLen, ok4 := slice[3].(serializer.Int)
-	probSquasher, ok5 := slice[4].(autofunc.Func)
-	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+	features, ok1 := slice[0].(rnn.SeqFunc)
+	classify, ok2 := slice[1].(rnn.SeqFunc)
+	gen, ok3 := slice[2].(rnn.SeqFunc)
+	size, ok4 := slice[3].(serializer.Int)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
 		return nil, errors.New("invalid Recurrent slice")
 	}
-	res := &Recurrent{
-		Discriminator: discrim,
-		Generator:     gen,
-		RandomSize:    int(size),
-		MaxLen:        int(maxLen),
-		ProbSquasher:  probSquasher,
-	}
-	if len(slice) == 6 {
-		res.GenActivation, ok1 = slice[5].(autofunc.Func)
-		if !ok1 {
-			return nil, errors.New("invalid Recurrent slice")
-		}
-	}
-	return res, nil
+	return &Recurrent{
+		DiscrimFeatures: features,
+		DiscrimClassify: classify,
+		Generator:       gen,
+		RandomSize:      int(size),
+	}, nil
 }
 
 // Gradient computes the collective gradient for the set
 // of seqtoseq.Samples and an equal number of generated
 // sequences.
 func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
-	var discParams []*autofunc.Variable
-	if p, ok := r.Discriminator.(sgd.Learner); ok {
-		discParams = p.Parameters()
-	}
-	discrimGrad := autofunc.NewGradient(discParams)
-	r.sampleGradients(s, discrimGrad)
+	featureFunc := rnn.ComposedSeqFunc{r.Generator, r.DiscrimFeatures}
+	discFunc := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
+	fullFunc := append(rnn.ComposedSeqFunc{r.Generator}, discFunc...)
 
-	var genParams []*autofunc.Variable
-	if p, ok := r.Generator.(sgd.Learner); ok {
-		genParams = p.Parameters()
-	}
-	genGrad := autofunc.NewGradient(genParams)
-	r.genGradients(genGrad, discrimGrad, s.Len())
+	genInputs := r.generatorInputs(s)
+	realInputs := r.sampleInputs(s)
+	genFeatures := featureFunc.BatchSeqs(genInputs)
+	realFeatures := r.DiscrimFeatures.BatchSeqs(realInputs)
+
+	discRealResults := discFunc.BatchSeqs(realInputs)
+	discGenResults := fullFunc.BatchSeqs(genInputs)
+
+	genGrad := autofunc.NewGradient(r.Generator.(sgd.Learner).Parameters())
+	discGrad := autofunc.NewGradient(discFunc.Parameters())
+
+	r.discrimGradient(discRealResults, 1, discGrad)
+	r.discrimGradient(discGenResults, 0, discGrad)
+	r.genGradient(genFeatures, realFeatures, genGrad)
 
 	res := autofunc.Gradient{}
-	for _, grad := range []autofunc.Gradient{discrimGrad, genGrad} {
-		for key, val := range grad {
-			res[key] = val
+	for _, g := range []autofunc.Gradient{genGrad, discGrad} {
+		for k, v := range g {
+			res[k] = v
 		}
 	}
+
 	return res
 }
 
@@ -120,49 +93,30 @@ func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
 	for _, x := range sample.Inputs {
 		inSeq = append(inSeq, &autofunc.Variable{Vector: x})
 	}
-	res := r.Discriminator.BatchSeqs([][]autofunc.Result{inSeq})
-	lastOut := &autofunc.Variable{
-		Vector: res.OutputSeqs()[0][len(res.OutputSeqs()[0])-1],
+	composed := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
+	res := composed.BatchSeqs([][]autofunc.Result{inSeq}).OutputSeqs()[0]
+	var totalCost float64
+	for _, x := range res {
+		outVar := &autofunc.Variable{Vector: x}
+		cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, outVar)
+		totalCost += cost.Output()[0]
 	}
-	cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, lastOut)
-	return cost.Output()[0]
+	return totalCost
 }
 
 // SampleGenCost measures the cross-entropy cost of the
-// discriminator on a generated input.
-func (r *Recurrent) SampleGenCost() float64 {
-	randomSeq := make([]autofunc.Result, r.MaxLen)
-	for i := range randomSeq {
-		normVec := make(linalg.Vector, r.RandomSize)
-		for j := range normVec {
-			normVec[j] = rand.NormFloat64()
-		}
-		randomSeq[i] = &autofunc.Variable{Vector: normVec}
-	}
-
-	genFunc := &rnn.BlockSeqFunc{Block: r.Generator}
-	genOut := genFunc.BatchSeqs([][]autofunc.Result{randomSeq})
-
-	discInput := make([]autofunc.Result, r.MaxLen)
-
-	var rawMasks linalg.Vector
-	for i, x := range genOut.OutputSeqs()[0] {
-		outVec := &autofunc.Variable{Vector: x}
-		prefix := autofunc.Slice(outVec, 0, len(x)-1)
-		if r.GenActivation != nil {
-			prefix = r.GenActivation.Apply(prefix)
-		}
-		discInput[i] = prefix
-		rawMasks = append(rawMasks, x[len(x)-1])
-	}
-	discMask := r.ProbSquasher.Apply(&autofunc.Variable{Vector: rawMasks}).Output()
-
-	discOut := r.Discriminator.BatchSeqs([][]autofunc.Result{discInput})
+// discriminator on a generated input with the same length
+// as a randomly selected sample.
+func (r *Recurrent) SampleGenCost(samples sgd.SampleSet) float64 {
+	idx := rand.Intn(samples.Len())
+	inSeqs := r.generatorInputs(samples.Subset(idx, idx+1))
+	composed := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
+	res := composed.BatchSeqs(inSeqs).OutputSeqs()[0]
 	var totalCost float64
-	for i, out := range discOut.OutputSeqs()[0] {
-		outVar := &autofunc.Variable{Vector: out}
+	for _, x := range res {
+		outVar := &autofunc.Variable{Vector: x}
 		cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{0}, outVar)
-		totalCost += cost.Output()[0] * discMask[i]
+		totalCost += cost.Output()[0]
 	}
 	return totalCost
 }
@@ -175,146 +129,118 @@ func (r *Recurrent) SerializerType() string {
 
 // Serialize serializes the instance.
 func (r *Recurrent) Serialize() ([]byte, error) {
-	discSerializer, ok := r.Discriminator.(serializer.Serializer)
+	featuresSerializer, ok := r.DiscrimFeatures.(serializer.Serializer)
 	if !ok {
-		return nil, fmt.Errorf("type %T is not a Serializer", r.Discriminator)
+		return nil, fmt.Errorf("type %T is not a Serializer", r.DiscrimFeatures)
+	}
+	classifySerializer, ok := r.DiscrimClassify.(serializer.Serializer)
+	if !ok {
+		return nil, fmt.Errorf("type %T is not a Serializer", r.DiscrimClassify)
 	}
 	genSerializer, ok := r.Generator.(serializer.Serializer)
 	if !ok {
 		return nil, fmt.Errorf("type %T is not a Serializer", r.Generator)
 	}
-	squashSerializer, ok := r.ProbSquasher.(serializer.Serializer)
-	if !ok {
-		return nil, fmt.Errorf("type %T is not a Serializer", r.ProbSquasher)
-	}
 	serializers := []serializer.Serializer{
-		discSerializer,
+		featuresSerializer,
+		classifySerializer,
 		genSerializer,
 		serializer.Int(r.RandomSize),
-		serializer.Int(r.MaxLen),
-		squashSerializer,
-	}
-	if r.GenActivation != nil {
-		actSerializer, ok := r.GenActivation.(serializer.Serializer)
-		if !ok {
-			return nil, fmt.Errorf("type %T is not a Serializer", r.GenActivation)
-		}
-		serializers = append(serializers, actSerializer)
 	}
 	return serializer.SerializeSlice(serializers)
 }
 
-func (r *Recurrent) sampleGradients(s sgd.SampleSet, g autofunc.Gradient) {
-	var inputSeqs [][]autofunc.Result
+func (r *Recurrent) generatorInputs(s sgd.SampleSet) [][]autofunc.Result {
+	var res [][]autofunc.Result
 	for i := 0; i < s.Len(); i++ {
-		sample := s.GetSample(i).(seqtoseq.Sample)
-		seq := make([]autofunc.Result, len(sample.Inputs))
-		for j, x := range sample.Inputs {
-			seq[j] = &autofunc.Variable{Vector: x}
-		}
-		inputSeqs = append(inputSeqs, seq)
-	}
-	output := r.Discriminator.BatchSeqs(inputSeqs)
-	upstream := make([][]linalg.Vector, len(output.OutputSeqs()))
-	for i, outSeq := range output.OutputSeqs() {
-		upstream[i] = make([]linalg.Vector, len(outSeq))
-		for j := 0; j < len(outSeq)-1; j++ {
-			upstream[i][j] = linalg.Vector{0}
-		}
-		outVec := outSeq[len(outSeq)-1]
-		outVar := &autofunc.Variable{Vector: outVec}
-		cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, outVar)
-		tempGrad := autofunc.Gradient{outVar: linalg.Vector{0}}
-		cost.PropagateGradient(linalg.Vector{1}, tempGrad)
-		upstream[i][len(outSeq)-1] = tempGrad[outVar]
-	}
-	output.Gradient(upstream, g)
-}
-
-func (r *Recurrent) genGradients(genGrad, discGrad autofunc.Gradient, count int) {
-	randomSeqs := make([][]autofunc.Result, count)
-	for i := range randomSeqs {
-		seq := make([]autofunc.Result, r.MaxLen)
-		randomSeqs[i] = seq
-		for j := range seq {
-			normVec := make(linalg.Vector, r.RandomSize)
-			for k := range normVec {
-				normVec[k] = rand.NormFloat64()
+		var inSeq []autofunc.Result
+		for _ = range s.GetSample(i).(seqtoseq.Sample).Inputs {
+			inVec := make(linalg.Vector, r.RandomSize)
+			for j := range inVec {
+				inVec[j] = rand.NormFloat64()
 			}
-			seq[j] = &autofunc.Variable{Vector: normVec}
+			inSeq = append(inSeq, &autofunc.Variable{Vector: inVec})
 		}
+		res = append(res, inSeq)
 	}
+	return res
+}
 
-	genFunc := &rnn.BlockSeqFunc{Block: r.Generator}
-	genOut := genFunc.BatchSeqs(randomSeqs)
+func (r *Recurrent) sampleInputs(s sgd.SampleSet) [][]autofunc.Result {
+	var res [][]autofunc.Result
+	for i := 0; i < s.Len(); i++ {
+		var inSeq []autofunc.Result
+		for _, x := range s.GetSample(i).(seqtoseq.Sample).Inputs {
+			inSeq = append(inSeq, &autofunc.Variable{Vector: x})
+		}
+		res = append(res, inSeq)
+	}
+	return res
+}
 
-	poolVariables := make([][]*autofunc.Variable, len(genOut.OutputSeqs()))
-	discInput := make([][]autofunc.Result, len(genOut.OutputSeqs()))
-	discMask := make([][]autofunc.Result, len(genOut.OutputSeqs()))
-	for i, outSeq := range genOut.OutputSeqs() {
-		poolSeq := make([]*autofunc.Variable, len(outSeq))
-		discInputSeq := make([]autofunc.Result, len(outSeq))
-		poolVariables[i] = poolSeq
-		discInput[i] = discInputSeq
+func (r *Recurrent) discrimGradient(res rnn.ResultSeqs, desired float64, g autofunc.Gradient) {
+	var upstream [][]linalg.Vector
+	for _, outSeq := range res.OutputSeqs() {
+		var resSeq []linalg.Vector
+		for _, outVec := range outSeq {
+			v := &autofunc.Variable{Vector: outVec}
+			cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{desired}, v)
+			grad := autofunc.Gradient{v: linalg.Vector{0}}
+			cost.PropagateGradient(linalg.Vector{1}, grad)
+			resSeq = append(resSeq, grad[v])
+		}
+		upstream = append(upstream, resSeq)
+	}
+	res.Gradient(upstream, g)
+}
 
-		var rawEndWeights []autofunc.Result
-		for j, x := range outSeq {
-			poolSeq[j] = &autofunc.Variable{Vector: x}
-			prefix := autofunc.Slice(poolSeq[j], 0, len(x)-1)
-			if r.GenActivation != nil {
-				prefix = r.GenActivation.Apply(prefix)
+func (r *Recurrent) genGradient(gen, real rnn.ResultSeqs, g autofunc.Gradient) {
+	var realAvg linalg.Vector
+	var count int
+	for _, realSeq := range real.OutputSeqs() {
+		for _, realVec := range realSeq {
+			if realAvg == nil {
+				realAvg = realVec.Copy()
+			} else {
+				realAvg.Add(realVec)
 			}
-			discInputSeq[j] = prefix
-			lastVal := autofunc.Slice(poolSeq[j], len(x)-1, len(x))
-			rawEndWeights = append(rawEndWeights, lastVal)
-		}
-		endProbs := r.ProbSquasher.Apply(autofunc.Concat(rawEndWeights...))
-		discMask[i] = make([]autofunc.Result, len(endProbs.Output()))
-		for j := range discMask[i] {
-			discMask[i][j] = autofunc.Slice(endProbs, j, j+1)
+			count++
 		}
 	}
+	realAvg.Scale(1 / float64(count))
 
-	discOut := r.Discriminator.BatchSeqs(discInput)
-	r.propGenThroughDisc(discOut, discMask, discGrad, 0)
-	r.propGenThroughGen(genOut, discOut, poolVariables, discMask, genGrad)
-}
-
-func (r *Recurrent) propGenThroughDisc(out rnn.ResultSeqs, mask [][]autofunc.Result,
-	g autofunc.Gradient, desiredVal float64) {
-	upstream := make([][]linalg.Vector, len(out.OutputSeqs()))
-	for i, outSeq := range out.OutputSeqs() {
-		upstream[i] = make([]linalg.Vector, len(outSeq))
-		for j, x := range outSeq {
-			outVar := &autofunc.Variable{Vector: x}
-			g[outVar] = linalg.Vector{0}
-			maskedOut := autofunc.Mul(outVar, mask[i][j])
-			rawCost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{desiredVal}, maskedOut)
-			rawCost.PropagateGradient(linalg.Vector{1}, g)
-			upstream[i][j] = g[outVar]
-			delete(g, outVar)
+	var poolVars [][]*autofunc.Variable
+	var poolSum autofunc.Result
+	poolGrad := autofunc.Gradient{}
+	count = 0
+	for _, genSeq := range gen.OutputSeqs() {
+		var poolSeq []*autofunc.Variable
+		for _, genVec := range genSeq {
+			v := &autofunc.Variable{Vector: genVec}
+			poolSeq = append(poolSeq, v)
+			if poolSum == nil {
+				poolSum = v
+			} else {
+				poolSum = autofunc.Add(poolSum, v)
+			}
+			poolGrad[v] = make(linalg.Vector, len(v.Output()))
+			count++
 		}
+		poolVars = append(poolVars, poolSeq)
 	}
-	out.Gradient(upstream, g)
-}
+	poolSum = autofunc.Scale(poolSum, 1/float64(count))
 
-func (r *Recurrent) propGenThroughGen(genOut, discOut rnn.ResultSeqs,
-	pool [][]*autofunc.Variable, mask [][]autofunc.Result,
-	g autofunc.Gradient) {
-	tempGrad := autofunc.Gradient{}
-	for _, x := range pool {
-		for _, y := range x {
-			tempGrad[y] = make(linalg.Vector, len(y.Output()))
-		}
-	}
-	r.propGenThroughDisc(discOut, mask, tempGrad, 1)
+	cost := neuralnet.MeanSquaredCost{}.Cost(realAvg, poolSum)
+	cost.PropagateGradient(linalg.Vector{1}, poolGrad)
 
-	upstream := make([][]linalg.Vector, len(pool))
-	for i, x := range pool {
-		upstream[i] = make([]linalg.Vector, len(x))
-		for j, y := range x {
-			upstream[i][j] = tempGrad[y]
+	var upstream [][]linalg.Vector
+	for _, poolSeq := range poolVars {
+		var upstreamVec []linalg.Vector
+		for _, poolVar := range poolSeq {
+			upstreamVec = append(upstreamVec, poolGrad[poolVar])
 		}
+		upstream = append(upstream, upstreamVec)
 	}
-	genOut.Gradient(upstream, g)
+
+	gen.Gradient(upstream, g)
 }
