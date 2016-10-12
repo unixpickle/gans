@@ -110,7 +110,7 @@ func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
 func (r *Recurrent) SampleGenCost(samples sgd.SampleSet) float64 {
 	idx := rand.Intn(samples.Len())
 	inSeqs := r.generatorInputs(samples.Subset(idx, idx+1))
-	composed := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
+	composed := rnn.ComposedSeqFunc{r.Generator, r.DiscrimFeatures, r.DiscrimClassify}
 	res := composed.BatchSeqs(inSeqs).OutputSeqs()[0]
 	var totalCost float64
 	for _, x := range res {
