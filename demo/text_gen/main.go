@@ -22,8 +22,9 @@ const (
 
 	GenAtEnd = 10
 
-	BatchSize = 16
-	StepSize  = 0.001
+	BatchSize    = 64
+	GenAdvantage = 5
+	StepSize     = 1e-3 / GenAdvantage
 )
 
 func main() {
@@ -41,8 +42,10 @@ func main() {
 	}
 
 	log.Println("Training model...")
+	biased := sgd.NewBiaserUniform(g, model.Generator.(sgd.Learner).Parameters(),
+		GenAdvantage)
 	var iteration int
-	sgd.SGDMini(g, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
+	sgd.SGDMini(biased, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
 		log.Printf("iteration %d: real=%f gen=%f", iteration,
 			model.SampleRealCost(s), model.SampleGenCost(s))
 		iteration++

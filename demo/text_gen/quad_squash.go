@@ -23,7 +23,7 @@ func (_ QuadSquash) Apply(in autofunc.Result) autofunc.Result {
 	tanh := neuralnet.HyperbolicTangent{}
 	tan := tanh.Apply(in)
 	softmax := autofunc.Softmax{}
-	return softmax.Apply(autofunc.Scale(tan, 4))
+	return softmax.Apply(autofunc.Scale(tan, 5))
 }
 
 func (_ QuadSquash) ApplyR(rv autofunc.RVector, in autofunc.RResult) autofunc.RResult {
