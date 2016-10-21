@@ -6,11 +6,11 @@ import (
 	"math/rand"
 
 	"github.com/unixpickle/autofunc"
+	"github.com/unixpickle/autofunc/seqfunc"
 	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/serializer"
 	"github.com/unixpickle/sgd"
 	"github.com/unixpickle/weakai/neuralnet"
-	"github.com/unixpickle/weakai/rnn"
 	"github.com/unixpickle/weakai/rnn/seqtoseq"
 )
 
@@ -21,10 +21,10 @@ func init() {
 
 // Recurrent trains a GAN comprised of two RNNs.
 type Recurrent struct {
-	DiscrimFeatures rnn.SeqFunc
-	DiscrimClassify rnn.SeqFunc
+	DiscrimFeatures seqfunc.RFunc
+	DiscrimClassify seqfunc.RFunc
 
-	Generator  rnn.SeqFunc
+	Generator  seqfunc.RFunc
 	RandomSize int
 }
 
@@ -37,9 +37,9 @@ func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 	if len(slice) != 4 {
 		return nil, errors.New("invalid Recurrent slice")
 	}
-	features, ok1 := slice[0].(rnn.SeqFunc)
-	classify, ok2 := slice[1].(rnn.SeqFunc)
-	gen, ok3 := slice[2].(rnn.SeqFunc)
+	features, ok1 := slice[0].(seqfunc.RFunc)
+	classify, ok2 := slice[1].(seqfunc.RFunc)
+	gen, ok3 := slice[2].(seqfunc.RFunc)
 	size, ok4 := slice[3].(serializer.Int)
 	if !ok1 || !ok2 || !ok3 || !ok4 {
 		return nil, errors.New("invalid Recurrent slice")
@@ -56,24 +56,35 @@ func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 // of seqtoseq.Samples and an equal number of generated
 // sequences.
 func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
-	featureFunc := rnn.ComposedSeqFunc{r.Generator, r.DiscrimFeatures}
-	discFunc := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
-	fullFunc := append(rnn.ComposedSeqFunc{r.Generator}, discFunc...)
-
 	genInputs := r.generatorInputs(s)
 	realInputs := r.sampleInputs(s)
-	genFeatures := featureFunc.BatchSeqs(genInputs)
-	realFeatures := r.DiscrimFeatures.BatchSeqs(realInputs)
 
-	discRealResults := discFunc.BatchSeqs(realInputs)
-	discGenResults := fullFunc.BatchSeqs(genInputs)
+	genOutput := r.Generator.ApplySeqs(genInputs)
+	genFeatures := r.DiscrimFeatures.ApplySeqs(genOutput)
+
+	realFeatures := r.DiscrimFeatures.ApplySeqs(realInputs)
+	realClassifications := r.DiscrimClassify.ApplySeqs(realFeatures)
+	genClassifications := r.DiscrimClassify.ApplySeqs(genFeatures)
 
 	genGrad := autofunc.NewGradient(r.Generator.(sgd.Learner).Parameters())
-	discGrad := autofunc.NewGradient(discFunc.Parameters())
+	discGrad := autofunc.NewGradient(r.discriminatorParams())
 
-	r.discrimGradient(discRealResults, 1, discGrad)
-	r.discrimGradient(discGenResults, 0, discGrad)
-	r.genGradient(genFeatures, realFeatures, genGrad)
+	avgRealFeatures := seqfunc.Mean(realFeatures).Output()
+	avgGenFeatures := seqfunc.Mean(genFeatures)
+	genCost := neuralnet.MeanSquaredCost{}.Cost(avgRealFeatures, avgGenFeatures)
+	genCost.PropagateGradient([]float64{1}, genGrad)
+
+	posCostFunc := func(a autofunc.Result) autofunc.Result {
+		return neuralnet.SigmoidCECost{}.Cost([]float64{1}, a)
+	}
+	negCostFunc := func(a autofunc.Result) autofunc.Result {
+		return neuralnet.SigmoidCECost{}.Cost([]float64{0}, a)
+	}
+	discrimCost := autofunc.Add(
+		seqfunc.AddAll(seqfunc.Map(realClassifications, posCostFunc)),
+		seqfunc.AddAll(seqfunc.Map(genClassifications, negCostFunc)),
+	)
+	discrimCost.PropagateGradient([]float64{1}, discGrad)
 
 	res := autofunc.Gradient{}
 	for _, g := range []autofunc.Gradient{genGrad, discGrad} {
@@ -89,12 +100,9 @@ func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
 // discriminator on a randomly chosen sample.
 func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
 	sample := samples.GetSample(rand.Intn(samples.Len())).(seqtoseq.Sample)
-	var inSeq []autofunc.Result
-	for _, x := range sample.Inputs {
-		inSeq = append(inSeq, &autofunc.Variable{Vector: x})
-	}
-	composed := rnn.ComposedSeqFunc{r.DiscrimFeatures, r.DiscrimClassify}
-	res := composed.BatchSeqs([][]autofunc.Result{inSeq}).OutputSeqs()[0]
+	inRes := seqfunc.ConstResult([][]linalg.Vector{sample.Inputs})
+	features := r.DiscrimFeatures.ApplySeqs(inRes)
+	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
 	var totalCost float64
 	for _, x := range res {
 		outVar := &autofunc.Variable{Vector: x}
@@ -110,8 +118,9 @@ func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
 func (r *Recurrent) SampleGenCost(samples sgd.SampleSet) float64 {
 	idx := rand.Intn(samples.Len())
 	inSeqs := r.generatorInputs(samples.Subset(idx, idx+1))
-	composed := rnn.ComposedSeqFunc{r.Generator, r.DiscrimFeatures, r.DiscrimClassify}
-	res := composed.BatchSeqs(inSeqs).OutputSeqs()[0]
+	generated := r.Generator.ApplySeqs(inSeqs)
+	features := r.DiscrimFeatures.ApplySeqs(generated)
+	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
 	var totalCost float64
 	for _, x := range res {
 		outVar := &autofunc.Variable{Vector: x}
@@ -150,97 +159,34 @@ func (r *Recurrent) Serialize() ([]byte, error) {
 	return serializer.SerializeSlice(serializers)
 }
 
-func (r *Recurrent) generatorInputs(s sgd.SampleSet) [][]autofunc.Result {
-	var res [][]autofunc.Result
+func (r *Recurrent) discriminatorParams() []*autofunc.Variable {
+	var res []*autofunc.Variable
+	for _, layer := range []seqfunc.RFunc{r.DiscrimClassify, r.DiscrimFeatures} {
+		res = append(res, layer.(sgd.Learner).Parameters()...)
+	}
+	return res
+}
+
+func (r *Recurrent) generatorInputs(s sgd.SampleSet) seqfunc.Result {
+	var res [][]linalg.Vector
 	for i := 0; i < s.Len(); i++ {
-		var inSeq []autofunc.Result
+		var inSeq []linalg.Vector
 		for _ = range s.GetSample(i).(seqtoseq.Sample).Inputs {
 			inVec := make(linalg.Vector, r.RandomSize)
 			for j := range inVec {
 				inVec[j] = rand.NormFloat64()
 			}
-			inSeq = append(inSeq, &autofunc.Variable{Vector: inVec})
+			inSeq = append(inSeq, inVec)
 		}
 		res = append(res, inSeq)
 	}
-	return res
+	return seqfunc.ConstResult(res)
 }
 
-func (r *Recurrent) sampleInputs(s sgd.SampleSet) [][]autofunc.Result {
-	var res [][]autofunc.Result
+func (r *Recurrent) sampleInputs(s sgd.SampleSet) seqfunc.Result {
+	var res [][]linalg.Vector
 	for i := 0; i < s.Len(); i++ {
-		var inSeq []autofunc.Result
-		for _, x := range s.GetSample(i).(seqtoseq.Sample).Inputs {
-			inSeq = append(inSeq, &autofunc.Variable{Vector: x})
-		}
-		res = append(res, inSeq)
+		res = append(res, s.GetSample(i).(seqtoseq.Sample).Inputs)
 	}
-	return res
-}
-
-func (r *Recurrent) discrimGradient(res rnn.ResultSeqs, desired float64, g autofunc.Gradient) {
-	var upstream [][]linalg.Vector
-	for _, outSeq := range res.OutputSeqs() {
-		var resSeq []linalg.Vector
-		for _, outVec := range outSeq {
-			v := &autofunc.Variable{Vector: outVec}
-			cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{desired}, v)
-			grad := autofunc.Gradient{v: linalg.Vector{0}}
-			cost.PropagateGradient(linalg.Vector{1}, grad)
-			resSeq = append(resSeq, grad[v])
-		}
-		upstream = append(upstream, resSeq)
-	}
-	res.Gradient(upstream, g)
-}
-
-func (r *Recurrent) genGradient(gen, real rnn.ResultSeqs, g autofunc.Gradient) {
-	var realAvg linalg.Vector
-	var count int
-	for _, realSeq := range real.OutputSeqs() {
-		for _, realVec := range realSeq {
-			if realAvg == nil {
-				realAvg = realVec.Copy()
-			} else {
-				realAvg.Add(realVec)
-			}
-			count++
-		}
-	}
-	realAvg.Scale(1 / float64(count))
-
-	var poolVars [][]*autofunc.Variable
-	var poolSum autofunc.Result
-	poolGrad := autofunc.Gradient{}
-	count = 0
-	for _, genSeq := range gen.OutputSeqs() {
-		var poolSeq []*autofunc.Variable
-		for _, genVec := range genSeq {
-			v := &autofunc.Variable{Vector: genVec}
-			poolSeq = append(poolSeq, v)
-			if poolSum == nil {
-				poolSum = v
-			} else {
-				poolSum = autofunc.Add(poolSum, v)
-			}
-			poolGrad[v] = make(linalg.Vector, len(v.Output()))
-			count++
-		}
-		poolVars = append(poolVars, poolSeq)
-	}
-	poolSum = autofunc.Scale(poolSum, 1/float64(count))
-
-	cost := neuralnet.MeanSquaredCost{}.Cost(realAvg, poolSum)
-	cost.PropagateGradient(linalg.Vector{1}, poolGrad)
-
-	var upstream [][]linalg.Vector
-	for _, poolSeq := range poolVars {
-		var upstreamVec []linalg.Vector
-		for _, poolVar := range poolSeq {
-			upstreamVec = append(upstreamVec, poolGrad[poolVar])
-		}
-		upstream = append(upstream, upstreamVec)
-	}
-
-	gen.Gradient(upstream, g)
+	return seqfunc.ConstResult(res)
 }

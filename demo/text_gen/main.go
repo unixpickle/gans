@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"time"
@@ -23,9 +24,10 @@ const (
 	GenAtEnd = 10
 
 	BatchSize    = 64
-	GenAdvantage = 5
-	StepSize     = 1e-3 / GenAdvantage
+	GenAdvantage = 2
 )
+
+var StepSize = math.Min(1e-3/GenAdvantage, 1e-3*GenAdvantage)
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
@@ -101,16 +103,16 @@ func readOrCreateModel(path string) *gans.Recurrent {
 
 	rec := &gans.Recurrent{
 		DiscrimFeatures: &rnn.BlockSeqFunc{
-			Block: rnn.StackedBlock{
+			B: rnn.StackedBlock{
 				rnn.NewLSTM(CharCount, 200),
 				rnn.NewLSTM(200, 100),
 			},
 		},
 		DiscrimClassify: &rnn.BlockSeqFunc{
-			Block: rnn.NewNetworkBlock(discOutputBlock, 0),
+			B: rnn.NewNetworkBlock(discOutputBlock, 0),
 		},
 		Generator: &rnn.BlockSeqFunc{
-			Block: rnn.StackedBlock{
+			B: rnn.StackedBlock{
 				rnn.NewLSTM(RandCount, 200),
 				rnn.NewLSTM(200, 100),
 				rnn.NewNetworkBlock(genOutputBlock, 0),
@@ -123,7 +125,7 @@ func readOrCreateModel(path string) *gans.Recurrent {
 
 func generateSentence(model *gans.Recurrent) string {
 	var res string
-	runner := &rnn.Runner{Block: model.Generator.(*rnn.BlockSeqFunc).Block}
+	runner := &rnn.Runner{Block: model.Generator.(*rnn.BlockSeqFunc).B}
 
 	var lenWeights linalg.Vector
 	for i := 0; i < MaxLen; i++ {
