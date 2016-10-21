@@ -81,6 +81,7 @@ func readSentences(path string) []string {
 			}
 		}
 		if endOfSentence {
+			sentence = strings.TrimSpace(sentence)
 			if isUsableSentence(sentence) {
 				sentence += string(chr)
 				res = append(res, sentence)
@@ -94,6 +95,9 @@ func readSentences(path string) []string {
 }
 
 func isUsableSentence(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
 	for _, chr := range s {
 		if !(chr >= 'a' && chr <= 'z') && !(chr >= 'A' && chr <= 'Z') &&
 			chr != ' ' {
