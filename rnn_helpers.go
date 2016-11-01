@@ -1,6 +1,9 @@
 package gans
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"math/rand"
 
 	"github.com/unixpickle/autofunc"
@@ -13,6 +16,9 @@ import (
 func init() {
 	var o OneHotLayer
 	serializer.RegisterTypedDeserializer(o.SerializerType(), DeserializeOneHotLayer)
+
+	var f FeedbackBlock
+	serializer.RegisterTypedDeserializer(f.SerializerType(), DeserializeFeedbackBlock)
 }
 
 // A OneHotLayer generates a one-hot-vector by applying
@@ -52,7 +58,7 @@ func (_ OneHotLayer) ApplyR(rv autofunc.RVector, in autofunc.RResult) autofunc.R
 }
 
 // SerializerType returns the unique ID used to serialize
-// a OneHotLayer.
+// a OneHotLayer with the serializer package.
 func (_ OneHotLayer) SerializerType() string {
 	return "github.com/unixpickle/gans.OneHotLayer"
 }
@@ -122,6 +128,30 @@ func NewFeedbackBlock(b rnn.Block, outSize int) *FeedbackBlock {
 			Vector: make(linalg.Vector, outSize),
 		},
 	}
+}
+
+// DeserializeFeedbackBlock deserializes a FeedbackBlock.
+func DeserializeFeedbackBlock(d []byte) (*FeedbackBlock, error) {
+	slice, err := serializer.DeserializeSlice(d)
+	if err != nil {
+		return nil, err
+	}
+	if len(slice) != 2 {
+		return nil, errors.New("bad FeedbackBlock slice")
+	}
+	blockObj, ok1 := slice[0].(rnn.Block)
+	initObj, ok2 := slice[1].(serializer.Bytes)
+	if !ok1 || !ok2 {
+		return nil, errors.New("bad FeedbackBlock slice")
+	}
+	var feedback autofunc.Variable
+	if err := json.Unmarshal([]byte(initObj), &feedback); err != nil {
+		return nil, err
+	}
+	return &FeedbackBlock{
+		B:            blockObj,
+		InitFeedback: &feedback,
+	}, nil
 }
 
 // StartState returns the start state of the block.
@@ -249,6 +279,28 @@ func (f *FeedbackBlock) Parameters() []*autofunc.Variable {
 		res = append(res, l.Parameters()...)
 	}
 	return res
+}
+
+// SerializerType returns the unique ID used to serialize
+// a FeedbackBlock with the serializer package.
+func (f *FeedbackBlock) SerializerType() string {
+	return "github.com/unixpickle/gans.FeedbackBlock"
+}
+
+// Serialize serializes the block.
+func (f *FeedbackBlock) Serialize() ([]byte, error) {
+	blockSer, ok := f.B.(serializer.Serializer)
+	if !ok {
+		return nil, fmt.Errorf("type is not a Serializer: %T", f.B)
+	}
+	data, err := json.Marshal(f.InitFeedback)
+	if err != nil {
+		return nil, err
+	}
+	return serializer.SerializeSlice([]serializer.Serializer{
+		blockSer,
+		serializer.Bytes(data),
+	})
 }
 
 type feedbackBlockResult struct {
