@@ -3,11 +3,9 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"math/rand"
 	"os"
 	"strings"
 
-	"github.com/unixpickle/autofunc"
 	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/sgd"
 	"github.com/unixpickle/weakai/rnn/seqtoseq"
@@ -35,14 +33,8 @@ func (s *SampleSet) GetSample(i int) interface{} {
 	sample.Inputs = make([]linalg.Vector, len(sentence))
 	for i, b := range []byte(sentence) {
 		vec := make(linalg.Vector, CharCount)
-		vec[int(b)] = 5
-		for j := range vec {
-			if j != int(b) {
-				vec[j] = rand.NormFloat64() - 5
-			}
-		}
-		softened := QuadSquash{}.Apply(&autofunc.Variable{Vector: vec}).Output()
-		sample.Inputs[i] = softened
+		vec[int(b)] = 1
+		sample.Inputs[i] = vec
 	}
 	return sample
 }

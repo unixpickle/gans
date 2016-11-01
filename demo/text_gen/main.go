@@ -24,7 +24,7 @@ const (
 	GenAtEnd = 10
 
 	BatchSize    = 64
-	GenAdvantage = 2
+	GenAdvantage = 1
 )
 
 var StepSize = math.Min(1e-3/GenAdvantage, 1e-3*GenAdvantage)
@@ -87,7 +87,7 @@ func readOrCreateModel(path string) *gans.Recurrent {
 
 	discOutputBlock := neuralnet.Network{
 		&neuralnet.DenseLayer{
-			InputCount:  100,
+			InputCount:  200,
 			OutputCount: 1,
 		},
 	}
@@ -97,26 +97,26 @@ func readOrCreateModel(path string) *gans.Recurrent {
 			InputCount:  100,
 			OutputCount: CharCount,
 		},
-		QuadSquash{},
+		gans.OneHotLayer{},
 	}
 	genOutputBlock.Randomize()
 
 	rec := &gans.Recurrent{
 		DiscrimFeatures: &rnn.BlockSeqFunc{
 			B: rnn.StackedBlock{
-				rnn.NewLSTM(CharCount, 200),
-				rnn.NewLSTM(200, 100),
+				rnn.NewLSTM(CharCount, 300),
+				rnn.NewLSTM(300, 200),
 			},
 		},
 		DiscrimClassify: &rnn.BlockSeqFunc{
 			B: rnn.NewNetworkBlock(discOutputBlock, 0),
 		},
 		Generator: &rnn.BlockSeqFunc{
-			B: rnn.StackedBlock{
-				rnn.NewLSTM(RandCount, 200),
+			B: gans.NewFeedbackBlock(rnn.StackedBlock{
+				rnn.NewLSTM(RandCount+CharCount, 200),
 				rnn.NewLSTM(200, 100),
 				rnn.NewNetworkBlock(genOutputBlock, 0),
-			},
+			}, CharCount),
 		},
 		RandomSize: RandCount,
 	}
