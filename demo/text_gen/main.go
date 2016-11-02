@@ -27,7 +27,7 @@ const (
 	GenAdvantage = 1
 )
 
-var StepSize = math.Min(1e-3/GenAdvantage, 1e-3*GenAdvantage)
+var StepSize = 1e-3 * math.Min(1/GenAdvantage, 1)
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
