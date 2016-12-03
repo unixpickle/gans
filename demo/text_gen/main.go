@@ -23,8 +23,8 @@ const (
 
 	GenAtEnd = 10
 
-	BatchSize    = 64
-	GenAdvantage = 1
+	BatchSize    = 16
+	GenAdvantage = 0.1
 )
 
 var StepSize = 1e-3 * math.Min(1/GenAdvantage, 1)
@@ -97,26 +97,23 @@ func readOrCreateModel(path string) *gans.Recurrent {
 			InputCount:  100,
 			OutputCount: CharCount,
 		},
-		gans.OneHotLayer{},
+		&neuralnet.SoftmaxLayer{},
 	}
 	genOutputBlock.Randomize()
 
 	rec := &gans.Recurrent{
 		DiscrimFeatures: &rnn.BlockSeqFunc{
-			B: rnn.StackedBlock{
-				rnn.NewLSTM(CharCount, 300),
-				rnn.NewLSTM(300, 200),
-			},
+			B: NewExpBlock(CharCount, 200),
 		},
 		DiscrimClassify: &rnn.BlockSeqFunc{
 			B: rnn.NewNetworkBlock(discOutputBlock, 0),
 		},
 		Generator: &rnn.BlockSeqFunc{
-			B: gans.NewFeedbackBlock(rnn.StackedBlock{
-				rnn.NewLSTM(RandCount+CharCount, 200),
+			B: rnn.StackedBlock{
+				rnn.NewLSTM(RandCount, 200),
 				rnn.NewLSTM(200, 100),
 				rnn.NewNetworkBlock(genOutputBlock, 0),
-			}, CharCount),
+			},
 		},
 		RandomSize: RandCount,
 	}
@@ -127,7 +124,6 @@ func generateSentence(model *gans.Recurrent) string {
 	var res string
 	runner := &rnn.Runner{Block: model.Generator.(*rnn.BlockSeqFunc).B}
 
-	var lenWeights linalg.Vector
 	for i := 0; i < MaxLen; i++ {
 		input := make(linalg.Vector, model.RandomSize)
 		for j := range input {
@@ -135,8 +131,6 @@ func generateSentence(model *gans.Recurrent) string {
 		}
 
 		outVec := runner.StepTime(input)
-		lenWeights = append(lenWeights, outVec[len(outVec)-1])
-
 		res += string(byte(randomSample(outVec[:CharCount])))
 	}
 

@@ -21,10 +21,25 @@ func init() {
 
 // Recurrent trains a GAN comprised of two RNNs.
 type Recurrent struct {
+	// DiscrimFeatures transforms a sample (either generated
+	// or real) into some features for feature matching.
 	DiscrimFeatures seqfunc.RFunc
+
+	// DiscrimClassify produces classifications ("real" or
+	// "generated") for every timestep in an input sequence
+	// of features from DiscrimFeatures.
+	//
+	// The classifications should be raw linear values, since
+	// they are automatically fed into a sigmoid during
+	// training.
 	DiscrimClassify seqfunc.RFunc
 
-	Generator  seqfunc.RFunc
+	// Generator takes sequences of random vectors and makes
+	// synthetic sequences.
+	Generator seqfunc.RFunc
+
+	// RandomSize specifies the vector input size of the
+	// generator.
 	RandomSize int
 }
 
