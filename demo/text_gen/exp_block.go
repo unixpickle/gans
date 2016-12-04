@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	expBlockIdentityScale = 0.9
+	expBlockIdentityScale = 0.8
 	expWeightInit         = 0.01
 )
 
@@ -30,11 +30,14 @@ func NewExpBlock(inSize, stateSize int) rnn.Block {
 		InputWeights: make([]*autofunc.Variable, inSize),
 		InitState:    &autofunc.Variable{Vector: make(linalg.Vector, stateSize)},
 	}
+
+	// Only used to initialize vectors to the right sizes.
 	bf.StateTrans.Randomize()
-	bf.StateTrans.Biases.Var.Vector.Scale(0)
+
 	bf.StateTrans.Weights.Data.Vector.Scale(0)
-	// Identity initializations, like an IRNN.
+	bf.StateTrans.Biases.Var.Vector.Scale(0)
 	for i := 0; i < stateSize; i++ {
+		// Identity initializations, like an IRNN.
 		bf.StateTrans.Weights.Data.Vector[i+stateSize*i] = expBlockIdentityScale
 	}
 	for i := range bf.InputWeights {
@@ -68,7 +71,7 @@ func (e *expBlockFunc) Apply(in autofunc.Result) autofunc.Result {
 	return autofunc.Pool(in, func(in autofunc.Result) autofunc.Result {
 		newState := e.StateTrans.Apply(autofunc.Slice(in, inSize, inSize+stateSize))
 		return autofunc.Pool(newState, func(newState autofunc.Result) autofunc.Result {
-			activation := neuralnet.ReLU{}
+			activation := neuralnet.HyperbolicTangent{}
 			var expOut autofunc.Result
 			for i := 0; i < inSize; i++ {
 				prob := autofunc.Slice(in, i, i+1)
@@ -92,7 +95,7 @@ func (e *expBlockFunc) ApplyR(rv autofunc.RVector, in autofunc.RResult) autofunc
 	return autofunc.PoolR(in, func(in autofunc.RResult) autofunc.RResult {
 		newState := e.StateTrans.ApplyR(rv, autofunc.SliceR(in, inSize, inSize+stateSize))
 		return autofunc.PoolR(newState, func(newState autofunc.RResult) autofunc.RResult {
-			activation := neuralnet.ReLU{}
+			activation := neuralnet.HyperbolicTangent{}
 			var expOut autofunc.RResult
 			for i := 0; i < inSize; i++ {
 				prob := autofunc.SliceR(in, i, i+1)
@@ -109,6 +112,14 @@ func (e *expBlockFunc) ApplyR(rv autofunc.RVector, in autofunc.RResult) autofunc
 			return expOut
 		})
 	})
+}
+
+func (e *expBlockFunc) Parameters() []*autofunc.Variable {
+	var res []*autofunc.Variable
+	res = append(res, e.InitState)
+	res = append(res, e.InputWeights...)
+	res = append(res, e.StateTrans.Parameters()...)
+	return res
 }
 
 func (e *expBlockFunc) SerializerType() string {

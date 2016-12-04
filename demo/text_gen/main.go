@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/unixpickle/autofunc/seqfunc"
 	"github.com/unixpickle/gans"
 	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/sgd"
@@ -24,7 +25,7 @@ const (
 	GenAtEnd = 10
 
 	BatchSize    = 16
-	GenAdvantage = 0.1
+	GenAdvantage = 0.5
 )
 
 var StepSize = 1e-3 * math.Min(1/GenAdvantage, 1)
@@ -38,18 +39,24 @@ func main() {
 	samples := ReadSampleSet(os.Args[1])
 	model := readOrCreateModel(os.Args[2])
 
-	g := &sgd.RMSProp{
-		Gradienter: model,
-		Resiliency: 0.9,
-	}
+	g := &sgd.Adam{Gradienter: model}
 
 	log.Println("Training model...")
 	biased := sgd.NewBiaserUniform(g, model.Generator.(sgd.Learner).Parameters(),
 		GenAdvantage)
 	var iteration int
+	var lastBatch sgd.SampleSet
+	var lastGenIn seqfunc.Result
 	sgd.SGDMini(biased, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
-		log.Printf("iteration %d: real=%f gen=%f", iteration,
-			model.SampleRealCost(s), model.SampleGenCost(s))
+		var lastReal, lastGen float64
+		if lastBatch != nil {
+			lastReal = model.SampleRealCost(lastBatch)
+			lastGen = model.SampleGenCost(lastGenIn)
+		}
+		lastBatch = s.Copy()
+		lastGenIn = model.RandomGenInputs(s)
+		log.Printf("iteration %d: real=%f gen=%f last_real=%f last_gen=%f", iteration,
+			model.SampleRealCost(s), model.SampleGenCost(lastGenIn), lastReal, lastGen)
 		iteration++
 		return true
 	})
@@ -92,6 +99,7 @@ func readOrCreateModel(path string) *gans.Recurrent {
 		},
 	}
 	discOutputBlock.Randomize()
+	discOutputBlock[0].(*neuralnet.DenseLayer).Biases.Var.Vector.Scale(0)
 	genOutputBlock := neuralnet.Network{
 		&neuralnet.DenseLayer{
 			InputCount:  100,

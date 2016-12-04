@@ -112,9 +112,9 @@ func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
 }
 
 // SampleRealCost measures the cross-entropy cost of the
-// discriminator on a randomly chosen sample.
+// discriminator on the first sample.
 func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
-	sample := samples.GetSample(rand.Intn(samples.Len())).(seqtoseq.Sample)
+	sample := samples.GetSample(0).(seqtoseq.Sample)
 	inRes := seqfunc.ConstResult([][]linalg.Vector{sample.Inputs})
 	features := r.DiscrimFeatures.ApplySeqs(inRes)
 	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
@@ -127,13 +127,17 @@ func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
 	return totalCost
 }
 
-// SampleGenCost measures the cross-entropy cost of the
-// discriminator on a generated input with the same length
-// as a randomly selected sample.
-func (r *Recurrent) SampleGenCost(samples sgd.SampleSet) float64 {
+// RandomGenInputs generates random inputs for the
+// generator which can be fed to SampleGenCost.
+func (r *Recurrent) RandomGenInputs(samples sgd.SampleSet) seqfunc.Result {
 	idx := rand.Intn(samples.Len())
-	inSeqs := r.generatorInputs(samples.Subset(idx, idx+1))
-	generated := r.Generator.ApplySeqs(inSeqs)
+	return r.generatorInputs(samples.Subset(idx, idx+1))
+}
+
+// SampleGenCost measures the cross-entropy cost of the
+// discriminator on a generated input.
+func (r *Recurrent) SampleGenCost(genIn seqfunc.Result) float64 {
+	generated := r.Generator.ApplySeqs(genIn)
 	features := r.DiscrimFeatures.ApplySeqs(generated)
 	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
 	var totalCost float64
