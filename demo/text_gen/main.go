@@ -25,11 +25,11 @@ const (
 	GenAtEnd = 10
 
 	BatchSize      = 16
-	GenAdvantage   = 1
-	GenTemperature = 5
+	GenAdvantage   = 10
+	GenTemperature = 2
 )
 
-var StepSize = 1e-3 * math.Min(1/GenAdvantage, 1)
+var StepSize = 1e-3 * math.Min(1.0/GenAdvantage, 1)
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
