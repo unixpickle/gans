@@ -14,7 +14,7 @@ I also built a deeper GAN for extracting features from face images. The results 
 
 After a few different attempts, I still have not managed to get a recurrent GAN to produce reasonably English-sounding text. I will probably pick this up again in the future. Here, I will document some of the results I *have* seen while trying to generate text with a GAN.
 
-**Random outputs.** Obviously, when the GAN first starts up, the generator produces highly random outputs. These outputs include plenty of non-ASCII characters, so I will not include them here.
+**Random outputs.** Obviously, when the GAN first starts up, the generator produces random outputs. These outputs include plenty of non-ASCII characters, so I will not include them here.
 
 **Homogeneous outputs.** Often, the generator will output a few letters constantly, ignoring most other characters. For example:
 
