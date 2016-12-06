@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math"
 	"math/rand"
 	"os"
 	"time"
@@ -25,11 +24,10 @@ const (
 	GenAtEnd = 10
 
 	BatchSize      = 16
-	GenAdvantage   = 10
 	GenTemperature = 2
 )
 
-var StepSize = 1e-3 * math.Min(1.0/GenAdvantage, 1)
+var StepSize = 1e-3
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
@@ -40,14 +38,16 @@ func main() {
 	samples := ReadSampleSet(os.Args[1])
 	model := readOrCreateModel(os.Args[2])
 
-	g := sgd.NewBiaserUniform(&sgd.Adam{Gradienter: model},
-		model.Generator.(sgd.Learner).Parameters(), GenAdvantage)
+	model.DiscIterations = 40
+	model.GenIterations = 20
+	model.GenTrans = &sgd.Adam{}
+	model.DiscTrans = &sgd.Adam{}
 
 	log.Println("Training model...")
 	var iteration int
 	var lastBatch sgd.SampleSet
 	var lastGenIn seqfunc.Result
-	sgd.SGDMini(g, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
+	sgd.SGDMini(model, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
 		var lastReal, lastGen float64
 		if lastBatch != nil {
 			lastReal = model.SampleRealCost(lastBatch)

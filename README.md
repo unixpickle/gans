@@ -47,3 +47,13 @@ ht.......hh.....hhuh....hthuhh...uuhtt.ht.huht.thohhh..ehuhuht..thhthhthrhh..thh
 
 tt.....hhh....hhhut.tthhhut.t.tuuuu....huhh...thhhhh....huhrrh.tthhttn.ttuhth .huhh..hhhhuht..hthht.hhtauht..hhhhhr..hhht..t.uthhu..tthh ..htthh. u.hh
 ```
+
+**Homogeneous with 1st capital.** Enough said:
+
+```
+Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+Aaaaaaaaaaaaaaaaaaaaaaaakaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+GAaaaaaaaaaaaaaaaaaaaaaaiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
