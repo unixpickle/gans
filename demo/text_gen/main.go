@@ -24,8 +24,9 @@ const (
 
 	GenAtEnd = 10
 
-	BatchSize    = 16
-	GenAdvantage = 0.5
+	BatchSize      = 16
+	GenAdvantage   = 1
+	GenTemperature = 5
 )
 
 var StepSize = 1e-3 * math.Min(1/GenAdvantage, 1)
@@ -39,15 +40,14 @@ func main() {
 	samples := ReadSampleSet(os.Args[1])
 	model := readOrCreateModel(os.Args[2])
 
-	g := &sgd.Adam{Gradienter: model}
+	g := sgd.NewBiaserUniform(&sgd.Adam{Gradienter: model},
+		model.Generator.(sgd.Learner).Parameters(), GenAdvantage)
 
 	log.Println("Training model...")
-	biased := sgd.NewBiaserUniform(g, model.Generator.(sgd.Learner).Parameters(),
-		GenAdvantage)
 	var iteration int
 	var lastBatch sgd.SampleSet
 	var lastGenIn seqfunc.Result
-	sgd.SGDMini(biased, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
+	sgd.SGDMini(g, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
 		var lastReal, lastGen float64
 		if lastBatch != nil {
 			lastReal = model.SampleRealCost(lastBatch)
@@ -105,6 +105,7 @@ func readOrCreateModel(path string) *gans.Recurrent {
 			InputCount:  100,
 			OutputCount: CharCount,
 		},
+		&neuralnet.RescaleLayer{Scale: 1 / GenTemperature},
 		&neuralnet.SoftmaxLayer{},
 	}
 	genOutputBlock.Randomize()
