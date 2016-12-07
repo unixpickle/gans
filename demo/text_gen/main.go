@@ -105,7 +105,7 @@ func readOrCreateModel(path string) *gans.Recurrent {
 			InputCount:  100,
 			OutputCount: CharCount,
 		},
-		&neuralnet.RescaleLayer{Scale: 1 / GenTemperature},
+		&neuralnet.RescaleLayer{Scale: 1.0 / GenTemperature},
 		&neuralnet.SoftmaxLayer{},
 	}
 	genOutputBlock.Randomize()
