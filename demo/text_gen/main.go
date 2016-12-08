@@ -18,7 +18,7 @@ import (
 
 const (
 	CharCount = 256
-	RandCount = 10
+	RandCount = 50
 	MaxLen    = 150
 
 	GenAtEnd = 10
@@ -38,10 +38,10 @@ func main() {
 	samples := ReadSampleSet(os.Args[1])
 	model := readOrCreateModel(os.Args[2])
 
-	model.DiscIterations = 40
-	model.GenIterations = 20
-	model.GenTrans = &sgd.Adam{}
-	model.DiscTrans = &sgd.Adam{}
+	model.DiscIterations = 1
+	model.GenIterations = 1
+	model.GenTrans = &sgd.RMSProp{Resiliency: 0.9}
+	model.DiscTrans = &sgd.RMSProp{Resiliency: 0.9}
 
 	log.Println("Training model...")
 	var iteration int

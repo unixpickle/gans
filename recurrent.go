@@ -90,12 +90,11 @@ func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
 
 	genOutput := r.Generator.ApplySeqs(genInputs)
 	genFeatures := r.DiscrimFeatures.ApplySeqs(genOutput)
-
-	realFeatures := r.DiscrimFeatures.ApplySeqs(realInputs)
+	genClassifications := r.DiscrimClassify.ApplySeqs(genFeatures)
 
 	if subIdx < r.DiscIterations {
+		realFeatures := r.DiscrimFeatures.ApplySeqs(realInputs)
 		realClassifications := r.DiscrimClassify.ApplySeqs(realFeatures)
-		genClassifications := r.DiscrimClassify.ApplySeqs(genFeatures)
 
 		posCostFunc := func(a autofunc.Result) autofunc.Result {
 			return neuralnet.SigmoidCECost{}.Cost([]float64{1}, a)
@@ -113,10 +112,11 @@ func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
 			discGrad = r.DiscTrans.Transform(discGrad)
 		}
 	} else {
-		avgRealFeatures := seqfunc.Mean(realFeatures).Output()
-		avgGenFeatures := seqfunc.Mean(genFeatures)
-		genCost := neuralnet.MeanSquaredCost{}.Cost(avgRealFeatures, avgGenFeatures)
-		genCost.PropagateGradient([]float64{1}, genGrad)
+		genCostFunc := func(a autofunc.Result) autofunc.Result {
+			return neuralnet.SigmoidCECost{}.Cost([]float64{0}, a)
+		}
+		cost := seqfunc.AddAll(seqfunc.Map(genClassifications, genCostFunc))
+		cost.PropagateGradient([]float64{-1}, genGrad)
 
 		if r.GenTrans != nil {
 			genGrad = r.GenTrans.Transform(genGrad)
