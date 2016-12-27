@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"time"
 
-	"github.com/unixpickle/autofunc/seqfunc"
 	"github.com/unixpickle/gans"
 	"github.com/unixpickle/num-analysis/linalg"
 	"github.com/unixpickle/sgd"
@@ -21,10 +21,10 @@ const (
 	RandCount = 50
 	MaxLen    = 150
 
-	GenAtEnd = 10
+	GenAtEnd       = 10
+	GenTemperature = 1
 
-	BatchSize      = 16
-	GenTemperature = 2
+	BatchSize = 16
 )
 
 var StepSize = 1e-3
@@ -39,24 +39,22 @@ func main() {
 	model := readOrCreateModel(os.Args[2])
 
 	model.DiscIterations = 1
-	model.GenIterations = 1
+	model.GenIterations = 10
 	model.GenTrans = &sgd.RMSProp{Resiliency: 0.9}
 	model.DiscTrans = &sgd.RMSProp{Resiliency: 0.9}
 
 	log.Println("Training model...")
 	var iteration int
 	var lastBatch sgd.SampleSet
-	var lastGenIn seqfunc.Result
 	sgd.SGDMini(model, samples, StepSize, BatchSize, func(s sgd.SampleSet) bool {
 		var lastReal, lastGen float64
 		if lastBatch != nil {
-			lastReal = model.SampleRealCost(lastBatch)
-			lastGen = model.SampleGenCost(lastGenIn)
+			lastReal = model.DiscCost(lastBatch).Output()[0]
+			lastGen = model.GenReward(lastBatch)
 		}
 		lastBatch = s.Copy()
-		lastGenIn = model.RandomGenInputs(s)
-		log.Printf("iteration %d: real=%f gen=%f last_real=%f last_gen=%f", iteration,
-			model.SampleRealCost(s), model.SampleGenCost(lastGenIn), lastReal, lastGen)
+		log.Printf("iteration %d: disc=%f gen=%f last_disc=%f last_gen=%f", iteration,
+			model.DiscCost(s).Output()[0], model.GenReward(s), lastReal, lastGen)
 		iteration++
 		return true
 	})
@@ -92,36 +90,24 @@ func readOrCreateModel(path string) *gans.Recurrent {
 
 	log.Println("Creating new model...")
 
-	discOutputBlock := neuralnet.Network{
-		&neuralnet.DenseLayer{
-			InputCount:  200,
-			OutputCount: 1,
-		},
-	}
-	discOutputBlock.Randomize()
-	discOutputBlock[0].(*neuralnet.DenseLayer).Biases.Var.Vector.Scale(0)
-	genOutputBlock := neuralnet.Network{
-		&neuralnet.DenseLayer{
-			InputCount:  100,
-			OutputCount: CharCount,
-		},
-		&neuralnet.RescaleLayer{Scale: 1.0 / GenTemperature},
-		&neuralnet.SoftmaxLayer{},
-	}
-	genOutputBlock.Randomize()
-
 	rec := &gans.Recurrent{
-		DiscrimFeatures: &rnn.BlockSeqFunc{
-			B: NewExpBlock(CharCount, 200),
-		},
-		DiscrimClassify: &rnn.BlockSeqFunc{
-			B: rnn.NewNetworkBlock(discOutputBlock, 0),
+		Discriminator: &rnn.BlockSeqFunc{
+			B: rnn.StackedBlock{
+				rnn.NewLSTM(CharCount, 200),
+				rnn.NewNetworkBlock(neuralnet.Network{
+					neuralnet.NewDenseLayer(200, 1),
+				}, 0),
+			},
 		},
 		Generator: &rnn.BlockSeqFunc{
 			B: rnn.StackedBlock{
 				rnn.NewLSTM(RandCount, 200),
 				rnn.NewLSTM(200, 100),
-				rnn.NewNetworkBlock(genOutputBlock, 0),
+				rnn.NewNetworkBlock(neuralnet.Network{
+					neuralnet.NewDenseLayer(100, CharCount),
+					&neuralnet.RescaleLayer{Scale: 1.0 / GenTemperature},
+					&neuralnet.LogSoftmaxLayer{},
+				}, 0),
 			},
 		},
 		RandomSize: RandCount,
@@ -149,10 +135,10 @@ func generateSentence(model *gans.Recurrent) string {
 func randomSample(probs linalg.Vector) int {
 	num := rand.Float64()
 	for i, x := range probs {
-		if x > num {
+		num -= math.Exp(x)
+		if num < 0 {
 			return i
 		}
-		num -= x
 	}
 	return len(probs) - 1
 }

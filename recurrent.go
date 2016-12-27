@@ -1,8 +1,7 @@
 package gans
 
 import (
-	"errors"
-	"fmt"
+	"math"
 	"math/rand"
 
 	"github.com/unixpickle/autofunc"
@@ -27,21 +26,14 @@ type Recurrent struct {
 	GenTrans  sgd.Transformer
 	DiscTrans sgd.Transformer
 
-	// DiscrimFeatures transforms a sample (either generated
-	// or real) into some features for feature matching.
-	DiscrimFeatures seqfunc.RFunc
-
-	// DiscrimClassify produces classifications ("real" or
-	// "generated") for every timestep in an input sequence
-	// of features from DiscrimFeatures.
-	//
-	// The classifications should be raw linear values, since
-	// they are automatically fed into a sigmoid during
-	// training.
-	DiscrimClassify seqfunc.RFunc
+	// Discriminator outputs values which are meant to be fed
+	// into a softmax, with higher values indicating "real"
+	// samples.
+	Discriminator seqfunc.RFunc
 
 	// Generator takes sequences of random vectors and makes
 	// synthetic sequences.
+	// Its output activation should be neuralnet.LogSoftmax.
 	Generator seqfunc.RFunc
 
 	// RandomSize specifies the vector input size of the
@@ -53,71 +45,48 @@ type Recurrent struct {
 
 // DeserializeRecurrent deserializes a Recurrent instance.
 func DeserializeRecurrent(d []byte) (*Recurrent, error) {
-	slice, err := serializer.DeserializeSlice(d)
+	res := &Recurrent{}
+	var randomSize serializer.Int
+	err := serializer.DeserializeAny(d, &res.Discriminator, &res.Generator,
+		&randomSize)
 	if err != nil {
 		return nil, err
 	}
-	if len(slice) != 4 {
-		return nil, errors.New("invalid Recurrent slice")
-	}
-	features, ok1 := slice[0].(seqfunc.RFunc)
-	classify, ok2 := slice[1].(seqfunc.RFunc)
-	gen, ok3 := slice[2].(seqfunc.RFunc)
-	size, ok4 := slice[3].(serializer.Int)
-	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return nil, errors.New("invalid Recurrent slice")
-	}
-	return &Recurrent{
-		DiscrimFeatures: features,
-		DiscrimClassify: classify,
-		Generator:       gen,
-		RandomSize:      int(size),
-	}, nil
+	res.RandomSize = int(randomSize)
+	return res, nil
 }
 
-// Gradient computes the collective gradient for the set
-// of seqtoseq.Samples and an equal number of generated
-// sequences.
+// SerializerType returns the unique ID used to serialize
+// Recurrent instances with the serializer package.
+func (r *Recurrent) SerializerType() string {
+	return "github.com/unixpickle/gans.Recurrent"
+}
+
+// Serialize serializes the instance.
+func (r *Recurrent) Serialize() ([]byte, error) {
+	return serializer.SerializeAny(r.Discriminator, r.Generator,
+		serializer.Int(r.RandomSize))
+}
+
+// Gradient computes the gradient to be descended for the
+// next training step.
 func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
+	genGrad := autofunc.NewGradient(r.Generator.(sgd.Learner).Parameters())
+	discGrad := autofunc.NewGradient(r.Discriminator.(sgd.Learner).Parameters())
+
 	subIdx := r.iterIdx % (r.GenIterations + r.DiscIterations)
 	r.iterIdx++
 
-	genGrad := autofunc.NewGradient(r.Generator.(sgd.Learner).Parameters())
-	discGrad := autofunc.NewGradient(r.discriminatorParams())
-
-	genInputs := r.generatorInputs(s)
-	realInputs := r.sampleInputs(s)
-
-	genOutput := r.Generator.ApplySeqs(genInputs)
-	genFeatures := r.DiscrimFeatures.ApplySeqs(genOutput)
-	genClassifications := r.DiscrimClassify.ApplySeqs(genFeatures)
-
 	if subIdx < r.DiscIterations {
-		realFeatures := r.DiscrimFeatures.ApplySeqs(realInputs)
-		realClassifications := r.DiscrimClassify.ApplySeqs(realFeatures)
-
-		posCostFunc := func(a autofunc.Result) autofunc.Result {
-			return neuralnet.SigmoidCECost{}.Cost([]float64{1}, a)
-		}
-		negCostFunc := func(a autofunc.Result) autofunc.Result {
-			return neuralnet.SigmoidCECost{}.Cost([]float64{0}, a)
-		}
-		discrimCost := autofunc.Add(
-			seqfunc.AddAll(seqfunc.Map(realClassifications, posCostFunc)),
-			seqfunc.AddAll(seqfunc.Map(genClassifications, negCostFunc)),
-		)
-		discrimCost.PropagateGradient([]float64{1}, discGrad)
-
+		r.DiscCost(s).PropagateGradient([]float64{1}, discGrad)
 		if r.DiscTrans != nil {
 			discGrad = r.DiscTrans.Transform(discGrad)
 		}
 	} else {
-		genCostFunc := func(a autofunc.Result) autofunc.Result {
-			return neuralnet.SigmoidCECost{}.Cost([]float64{0}, a)
-		}
-		cost := seqfunc.AddAll(seqfunc.Map(genClassifications, genCostFunc))
-		cost.PropagateGradient([]float64{-1}, genGrad)
-
+		genIn := r.generatorSeed(s)
+		genOut := r.Generator.ApplySeqs(genIn)
+		upstream := r.sampleReward(genOut)
+		genOut.PropagateGradient(upstream, genGrad)
 		if r.GenTrans != nil {
 			genGrad = r.GenTrans.Transform(genGrad)
 		}
@@ -133,82 +102,86 @@ func (r *Recurrent) Gradient(s sgd.SampleSet) autofunc.Gradient {
 	return res
 }
 
-// SampleRealCost measures the cross-entropy cost of the
-// discriminator on the first sample.
-func (r *Recurrent) SampleRealCost(samples sgd.SampleSet) float64 {
-	sample := samples.GetSample(0).(seqtoseq.Sample)
-	inRes := seqfunc.ConstResult([][]linalg.Vector{sample.Inputs})
-	features := r.DiscrimFeatures.ApplySeqs(inRes)
-	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
-	var totalCost float64
-	for _, x := range res {
-		outVar := &autofunc.Variable{Vector: x}
-		cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{1}, outVar)
-		totalCost += cost.Output()[0]
+// DiscCost samples the discriminator cost.
+func (r *Recurrent) DiscCost(s sgd.SampleSet) autofunc.Result {
+	genIn := r.generatorSeed(s)
+	genOut := r.Generator.ApplySeqs(genIn)
+	sv := r.sampleGenSeq(genOut)
+	genClassifications := r.Discriminator.ApplySeqs(seqfunc.ConstResult(sv))
+
+	realIn := r.inputSequences(s)
+	realClassifications := r.Discriminator.ApplySeqs(realIn)
+
+	genCostFunc := func(a autofunc.Result) autofunc.Result {
+		return neuralnet.SigmoidCECost{}.Cost([]float64{0}, a)
 	}
-	return totalCost
+	realCostFunc := func(a autofunc.Result) autofunc.Result {
+		return neuralnet.SigmoidCECost{}.Cost([]float64{1}, a)
+	}
+
+	return autofunc.Add(
+		seqfunc.AddAll(seqfunc.Map(realClassifications, realCostFunc)),
+		seqfunc.AddAll(seqfunc.Map(genClassifications, genCostFunc)),
+	)
 }
 
-// RandomGenInputs generates random inputs for the
-// generator which can be fed to SampleGenCost.
-func (r *Recurrent) RandomGenInputs(samples sgd.SampleSet) seqfunc.Result {
-	idx := rand.Intn(samples.Len())
-	return r.generatorInputs(samples.Subset(idx, idx+1))
+// GenReward samples the generator reward.
+func (r *Recurrent) GenReward(s sgd.SampleSet) float64 {
+	genIn := r.generatorSeed(s)
+	genOut := r.Generator.ApplySeqs(genIn)
+	var sum float64
+	for _, x := range r.sampleReward(genOut) {
+		for _, y := range x {
+			for _, k := range y {
+				sum += k
+			}
+		}
+	}
+	return sum
 }
 
-// SampleGenCost measures the cross-entropy cost of the
-// discriminator on a generated input.
-func (r *Recurrent) SampleGenCost(genIn seqfunc.Result) float64 {
-	generated := r.Generator.ApplySeqs(genIn)
-	features := r.DiscrimFeatures.ApplySeqs(generated)
-	res := r.DiscrimClassify.ApplySeqs(features).OutputSeqs()[0]
-	var totalCost float64
-	for _, x := range res {
-		outVar := &autofunc.Variable{Vector: x}
-		cost := neuralnet.SigmoidCECost{}.Cost(linalg.Vector{0}, outVar)
-		totalCost += cost.Output()[0]
+// sampleReward samples from the policy's log-probability
+// outputs.
+// The resulting sequences are the same "shape" as policyOut,
+// but the only non-zero entries are in the positions where
+// the sampled character was chosen, and those entries are
+// equal to -1 times the cumulative reward from that point
+// onward.
+func (r *Recurrent) sampleReward(policyOut seqfunc.Result) [][]linalg.Vector {
+	sv := r.sampleGenSeq(policyOut)
+	out := seqfunc.Map(r.Discriminator.ApplySeqs(seqfunc.ConstResult(sv)),
+		autofunc.Sigmoid{}.Apply).OutputSeqs()
+
+	cumulativeRewards := make([][]linalg.Vector, len(sv))
+	for i, outSeq := range out {
+		var cumulative float64
+		cr := make([]linalg.Vector, len(outSeq))
+		for j := len(outSeq) - 1; j >= 0; j-- {
+			cumulative += outSeq[j][0]
+			cr[j] = sv[i][j].Scale(-cumulative)
+		}
+		cumulativeRewards[i] = cr
 	}
-	return totalCost
+
+	return cumulativeRewards
 }
 
-// SerializerType returns the unique ID used to serialize
-// Recurrent instances with the serializer package.
-func (r *Recurrent) SerializerType() string {
-	return "github.com/unixpickle/gans.Recurrent"
+func (r *Recurrent) sampleGenSeq(policyOut seqfunc.Result) [][]linalg.Vector {
+	var sampledVecs [][]linalg.Vector
+	for _, seq := range policyOut.OutputSeqs() {
+		var sampledVec []linalg.Vector
+		for _, vec := range seq {
+			choice := sampleVector(vec)
+			v := make(linalg.Vector, len(vec))
+			v[choice] = 1
+			sampledVec = append(sampledVec, v)
+		}
+		sampledVecs = append(sampledVecs, sampledVec)
+	}
+	return sampledVecs
 }
 
-// Serialize serializes the instance.
-func (r *Recurrent) Serialize() ([]byte, error) {
-	featuresSerializer, ok := r.DiscrimFeatures.(serializer.Serializer)
-	if !ok {
-		return nil, fmt.Errorf("type %T is not a Serializer", r.DiscrimFeatures)
-	}
-	classifySerializer, ok := r.DiscrimClassify.(serializer.Serializer)
-	if !ok {
-		return nil, fmt.Errorf("type %T is not a Serializer", r.DiscrimClassify)
-	}
-	genSerializer, ok := r.Generator.(serializer.Serializer)
-	if !ok {
-		return nil, fmt.Errorf("type %T is not a Serializer", r.Generator)
-	}
-	serializers := []serializer.Serializer{
-		featuresSerializer,
-		classifySerializer,
-		genSerializer,
-		serializer.Int(r.RandomSize),
-	}
-	return serializer.SerializeSlice(serializers)
-}
-
-func (r *Recurrent) discriminatorParams() []*autofunc.Variable {
-	var res []*autofunc.Variable
-	for _, layer := range []seqfunc.RFunc{r.DiscrimClassify, r.DiscrimFeatures} {
-		res = append(res, layer.(sgd.Learner).Parameters()...)
-	}
-	return res
-}
-
-func (r *Recurrent) generatorInputs(s sgd.SampleSet) seqfunc.Result {
+func (r *Recurrent) generatorSeed(s sgd.SampleSet) seqfunc.Result {
 	var res [][]linalg.Vector
 	for i := 0; i < s.Len(); i++ {
 		var inSeq []linalg.Vector
@@ -224,10 +197,21 @@ func (r *Recurrent) generatorInputs(s sgd.SampleSet) seqfunc.Result {
 	return seqfunc.ConstResult(res)
 }
 
-func (r *Recurrent) sampleInputs(s sgd.SampleSet) seqfunc.Result {
+func (r *Recurrent) inputSequences(s sgd.SampleSet) seqfunc.Result {
 	var res [][]linalg.Vector
 	for i := 0; i < s.Len(); i++ {
 		res = append(res, s.GetSample(i).(seqtoseq.Sample).Inputs)
 	}
 	return seqfunc.ConstResult(res)
+}
+
+func sampleVector(v linalg.Vector) int {
+	n := rand.Float64()
+	for i, x := range v {
+		n -= math.Exp(x)
+		if n < 0 {
+			return i
+		}
+	}
+	return 0
 }
