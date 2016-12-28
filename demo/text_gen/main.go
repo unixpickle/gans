@@ -24,7 +24,7 @@ const (
 	GenAtEnd       = 10
 	GenTemperature = 1
 
-	BatchSize = 16
+	BatchSize = 64
 )
 
 var StepSize = 1e-3
@@ -39,7 +39,7 @@ func main() {
 	model := readOrCreateModel(os.Args[2])
 
 	model.DiscIterations = 1
-	model.GenIterations = 10
+	model.GenIterations = 1
 	model.GenTrans = &sgd.RMSProp{Resiliency: 0.9}
 	model.DiscTrans = &sgd.RMSProp{Resiliency: 0.9}
 
@@ -110,7 +110,8 @@ func readOrCreateModel(path string) *gans.Recurrent {
 				}, 0),
 			},
 		},
-		RandomSize: RandCount,
+		RandomSize:     RandCount,
+		DiscountFactor: 0.8,
 	}
 	return rec
 }

@@ -40,6 +40,11 @@ type Recurrent struct {
 	// generator.
 	RandomSize int
 
+	// DiscountFactor is the factor by which rewards are
+	// discounted after every timestep.
+	// A value of 0 is treated as 1.
+	DiscountFactor float64
+
 	iterIdx int
 }
 
@@ -47,12 +52,14 @@ type Recurrent struct {
 func DeserializeRecurrent(d []byte) (*Recurrent, error) {
 	res := &Recurrent{}
 	var randomSize serializer.Int
+	var discount serializer.Float64
 	err := serializer.DeserializeAny(d, &res.Discriminator, &res.Generator,
-		&randomSize)
+		&randomSize, &discount)
 	if err != nil {
 		return nil, err
 	}
 	res.RandomSize = int(randomSize)
+	res.DiscountFactor = float64(discount)
 	return res, nil
 }
 
@@ -65,7 +72,8 @@ func (r *Recurrent) SerializerType() string {
 // Serialize serializes the instance.
 func (r *Recurrent) Serialize() ([]byte, error) {
 	return serializer.SerializeAny(r.Discriminator, r.Generator,
-		serializer.Int(r.RandomSize))
+		serializer.Int(r.RandomSize),
+		serializer.Float64(r.DiscountFactor))
 }
 
 // Gradient computes the gradient to be descended for the
@@ -159,6 +167,9 @@ func (r *Recurrent) sampleReward(policyOut seqfunc.Result) [][]linalg.Vector {
 		for j := len(outSeq) - 1; j >= 0; j-- {
 			cumulative += outSeq[j][0]
 			cr[j] = sv[i][j].Scale(-cumulative)
+			if r.DiscountFactor != 0 {
+				cumulative *= r.DiscountFactor
+			}
 		}
 		cumulativeRewards[i] = cr
 	}
